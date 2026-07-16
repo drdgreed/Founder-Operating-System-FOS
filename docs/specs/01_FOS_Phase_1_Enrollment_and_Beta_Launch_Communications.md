@@ -1,5 +1,7 @@
 # Founder Operating System
 
+> ⚠️ **Read [`PATCH-SET-01.md`](PATCH-SET-01.md) alongside this spec.** It supersedes §6.2 (Campaign is canonical in P0 §10.7; Phase 1 adds no Campaign fields — B2), §6.3 (`content_asset_id` → `artifact_record_id` — D2), and the shared projection hidden-property block (C1).
+
 ## Phase 1 - Enrollment Revenue and Beta Launch Communications
 ### Complete Technical Specification and Implementation Plan
 

@@ -1,5 +1,7 @@
 # Founder Operating System
 
+> ⚠️ **Read [`PATCH-SET-01.md`](PATCH-SET-01.md) alongside this spec.** It is AUTHORITATIVE and supersedes several sections here (notably §8.2, §9 entities, §10.7, §11.5, §12.2/12.3, §13, §14.6, §22). Multi-product scoping (ADR-09) and the `Offer`/`Product`/`Asset`/`ProductSignal`/`OperatingReview` entities are defined there, not here.
+
 ## Phase 0 - Founder Workspace and Operating Foundation
 ### Complete Technical Specification and Implementation Plan
 
