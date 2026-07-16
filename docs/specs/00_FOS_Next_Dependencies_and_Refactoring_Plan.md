@@ -1,5 +1,7 @@
 # Founder Operating System
 
+> ⚠️ **Read [`PATCH-SET-01.md`](PATCH-SET-01.md) alongside this plan.** It supersedes the §3.2 command names (crosswalk in E3) and the §7 gate letters (renamed `G1`–`G6` in E5).
+
 ## Next Dependencies and Cross-Phase Refactoring Plan
 ### Required before and during revised Phases 1 through 6
 
