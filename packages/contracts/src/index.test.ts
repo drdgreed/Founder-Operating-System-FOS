@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventEnvelopeSchema } from "./index.js";
+import { eventEnvelopeSchema, validateEventPayload } from "./index.js";
 
 const validEnvelope = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -34,5 +34,88 @@ describe("eventEnvelopeSchema (PATCH-SET-01 §S1)", () => {
   it("rejects a non-uuid correlation_id", () => {
     const bad = { ...validEnvelope, correlation_id: "not-a-uuid" };
     expect(eventEnvelopeSchema.safeParse(bad).success).toBe(false);
+  });
+});
+
+describe("validateEventPayload — artifact payload registry (PATCH-SET-02 §C)", () => {
+  const aId = "00000000-0000-0000-0000-0000000000a1";
+  const vId = "00000000-0000-0000-0000-0000000000b2";
+
+  it("FOS0-ART-44: accepts a well-formed lifecycle payload", () => {
+    expect(() =>
+      validateEventPayload("artifact.approved", {
+        artifactId: aId,
+        versionId: vId,
+        fromStatus: "in_review",
+        toStatus: "approved",
+      }),
+    ).not.toThrow();
+  });
+
+  it("FOS0-ART-45: rejects a malformed lifecycle payload (missing toStatus)", () => {
+    expect(() =>
+      validateEventPayload("artifact.approved", {
+        artifactId: aId,
+        versionId: vId,
+        fromStatus: "in_review",
+      }),
+    ).toThrow();
+  });
+
+  it("FOS0-ART-46: rejects a lifecycle payload with an out-of-range status", () => {
+    expect(() =>
+      validateEventPayload("artifact.approved", {
+        artifactId: aId,
+        versionId: vId,
+        fromStatus: "in_review",
+        toStatus: "not_a_state",
+      }),
+    ).toThrow();
+  });
+
+  it("FOS0-ART-47: rejects an unregistered artifact.* event type", () => {
+    expect(() => validateEventPayload("artifact.frobnicated", { any: "thing" })).toThrow(
+      /unregistered artifact event type/i,
+    );
+  });
+
+  it("FOS0-ART-48: passes through a non-artifact event type unchecked", () => {
+    expect(() =>
+      validateEventPayload("opportunity.stage_changed", { whatever: true }),
+    ).not.toThrow();
+  });
+
+  it("FOS0-ART-49: validates the created / version_created / draft_edited shapes", () => {
+    expect(() =>
+      validateEventPayload("artifact.created", {
+        artifactId: aId,
+        versionId: vId,
+        artifactType: "internal_note",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateEventPayload("artifact.version_created", {
+        artifactId: aId,
+        versionId: vId,
+        versionNumber: 2,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateEventPayload("artifact.draft_edited", {
+        artifactId: aId,
+        versionId: vId,
+        previousContentHash: "aaa",
+        contentHash: "bbb",
+      }),
+    ).not.toThrow();
+    // extra key rejected (strict shape)
+    expect(() =>
+      validateEventPayload("artifact.version_created", {
+        artifactId: aId,
+        versionId: vId,
+        versionNumber: 2,
+        extra: "x",
+      }),
+    ).toThrow();
   });
 });
