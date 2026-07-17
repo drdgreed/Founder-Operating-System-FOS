@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb } from "./pglite-db.js";
 import { seedWorkspaceAndProduct } from "./fixtures.js";
-import { createArtifact, createArtifactRevision } from "../artifact-service.js";
+import {
+  createArtifact,
+  createArtifactRevision,
+  transitionArtifactVersionStatus,
+} from "../artifact-service.js";
 import { computeContentHash } from "../content-hash.js";
 import { artifactVersion } from "../../schema/artifact_version.js";
 
@@ -22,7 +26,7 @@ function causeChainMatches(err: unknown, pattern: RegExp): boolean {
   return false;
 }
 
-describe("artifact_version content immutability (spec §12.2/§9.13, migration 0003)", () => {
+describe("artifact_version status-gated content immutability (PATCH-SET-02 §B, migration 0005)", () => {
   let ctx: Awaited<ReturnType<typeof createTestDb>>;
   let workspaceId: string;
   let productId: string;
@@ -48,7 +52,13 @@ describe("artifact_version content immutability (spec §12.2/§9.13, migration 0
     await ctx.close();
   });
 
-  it("FOS0-ART-20: a direct UPDATE of body_markdown RAISES at the DB layer", async () => {
+  it("FOS0-ART-20: once a version LEAVES draft, a direct UPDATE of body_markdown RAISES at the DB layer", async () => {
+    await transitionArtifactVersionStatus(ctx.db, {
+      versionId,
+      expectedStatus: "draft",
+      toStatus: "in_review",
+      actor: ACTOR,
+    });
     await expect(
       ctx.db
         .update(artifactVersion)
@@ -57,7 +67,13 @@ describe("artifact_version content immutability (spec §12.2/§9.13, migration 0
     ).rejects.toSatisfy((err: unknown) => causeChainMatches(err, /immutable/i));
   });
 
-  it("FOS0-ART-21: a direct UPDATE of content_hash RAISES at the DB layer", async () => {
+  it("FOS0-ART-21: once a version LEAVES draft, a direct UPDATE of content_hash RAISES at the DB layer", async () => {
+    await transitionArtifactVersionStatus(ctx.db, {
+      versionId,
+      expectedStatus: "draft",
+      toStatus: "in_review",
+      actor: ACTOR,
+    });
     await expect(
       ctx.db
         .update(artifactVersion)
@@ -66,20 +82,27 @@ describe("artifact_version content immutability (spec §12.2/§9.13, migration 0
     ).rejects.toSatisfy((err: unknown) => causeChainMatches(err, /immutable/i));
   });
 
-  it("FOS0-ART-22: updating approval_status alone is ALLOWED (content unchanged)", async () => {
+  it("FOS0-ART-22: updating approval_status alone is ALLOWED (content unchanged), for a non-draft row", async () => {
+    // Move to in_review, then a status-only update to approved is fine.
+    await transitionArtifactVersionStatus(ctx.db, {
+      versionId,
+      expectedStatus: "draft",
+      toStatus: "in_review",
+      actor: ACTOR,
+    });
     await ctx.db
       .update(artifactVersion)
-      .set({ approvalStatus: "in_review" })
+      .set({ approvalStatus: "approved" })
       .where(eq(artifactVersion.id, versionId));
     const [v] = await ctx.db
       .select()
       .from(artifactVersion)
       .where(eq(artifactVersion.id, versionId));
-    expect(v!.approvalStatus).toBe("in_review");
+    expect(v!.approvalStatus).toBe("approved");
     expect(v!.bodyMarkdown).toBe(BODY); // content intact
   });
 
-  it("FOS0-ART-23: create-revision produces a v2 with new content while the OLD v1 stays unchanged", async () => {
+  it("FOS0-ART-23: create-revision produces a v2 with new content; the prior v1 row is never mutated by the revision", async () => {
     const [v1Before] = await ctx.db
       .select()
       .from(artifactVersion)
@@ -96,7 +119,7 @@ describe("artifact_version content immutability (spec §12.2/§9.13, migration 0
       .select()
       .from(artifactVersion)
       .where(eq(artifactVersion.id, versionId));
-    expect(v1After).toEqual(v1Before); // v1 immutable — not touched by revision
+    expect(v1After).toEqual(v1Before); // untouched by revision
 
     const [v2] = await ctx.db
       .select()

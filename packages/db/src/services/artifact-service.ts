@@ -9,7 +9,11 @@ import {
 } from "../schema/index.js";
 import { writeEvent } from "./event-writer.js";
 import { computeContentHash } from "./content-hash.js";
-import { isLegalArtifactTransition, type ArtifactStatus } from "./artifact-transitions.js";
+import {
+  isLegalArtifactTransition,
+  eventForArtifactTransition,
+  type ArtifactStatus,
+} from "./artifact-transitions.js";
 import type { Db } from "./types.js";
 
 export class ArtifactNotFoundError extends Error {
@@ -49,6 +53,22 @@ export class StaleArtifactVersionError extends Error {
   ) {
     super(`Stale artifact version: expected status ${expectedStatus}, actual ${actualStatus}`);
     this.name = "StaleArtifactVersionError";
+  }
+}
+
+/**
+ * Raised when an in-place draft edit targets a version that is not `draft`
+ * (PATCH-SET-02 §B: content is mutable only while a version is a draft). The
+ * DB status-gated trigger is the backstop; this service check is the primary
+ * guard.
+ */
+export class ArtifactNotDraftError extends Error {
+  constructor(
+    public readonly versionId: string,
+    public readonly actualStatus: ArtifactStatus,
+  ) {
+    super(`ArtifactVersion ${versionId} is not a draft (status ${actualStatus}); edits are locked`);
+    this.name = "ArtifactNotDraftError";
   }
 }
 
@@ -130,13 +150,11 @@ export async function createArtifact(
       causationId: input.causationId ?? null,
       actor: input.actor,
       type: "artifact.created",
+      // §C payload shape.
       payload: {
         artifactId: record.id,
         versionId: version.id,
-        versionNumber: 1,
         artifactType: input.artifactType,
-        status: "draft",
-        contentHash,
       },
     });
 
@@ -171,12 +189,17 @@ export interface TransitionArtifactVersionResult {
 }
 
 /**
- * Transition-version-status (build step 4): applies a §12.2 lifecycle edge to
- * a version's `approval_status`. A legal edge updates the status, syncs the
- * ArtifactRecord.status mirror when the version is the record's current
- * version, and emits one `artifact.status_changed` event. An illegal edge, or
- * a stale-status (optimistic-concurrency) request, throws and writes/emits
- * NOTHING.
+ * Transition-version-status (build step 4, PATCH-SET-02 §A/§B): applies a
+ * §12.2 lifecycle edge to a version's `approval_status`. A legal edge:
+ * - updates `approval_status`,
+ * - sets `immutable_at = now()` on the FIRST transition out of `draft`
+ *   (draft -> in_review / draft -> superseded), locking content thereafter,
+ * - syncs the ArtifactRecord.status mirror when the version is the record's
+ *   current version,
+ * - emits exactly the ONE named event mapped to this edge (§A) — no generic
+ *   `artifact.status_changed`.
+ * An illegal edge, or a stale-status (optimistic-concurrency) request, throws
+ * and writes/emits NOTHING.
  */
 export async function transitionArtifactVersionStatus(
   db: Db,
@@ -202,9 +225,21 @@ export async function transitionArtifactVersionStatus(
       throw new IllegalArtifactTransitionError(current, input.toStatus);
     }
 
+    // §B: lock content on the first exit from draft. `immutable_at` is
+    // set-once (only when currently null); the content trigger is gated on the
+    // row's current status, so a later re-open to draft does not re-lock.
+    const leavingDraftFirstTime = current === "draft" && version.immutableAt === null;
+    const versionUpdate: Record<string, unknown> = {
+      approvalStatus: input.toStatus,
+      updatedAt: new Date(),
+    };
+    if (leavingDraftFirstTime) {
+      versionUpdate.immutableAt = new Date();
+    }
+
     const updated = await tx
       .update(artifactVersion)
-      .set({ approvalStatus: input.toStatus, updatedAt: new Date() })
+      .set(versionUpdate)
       .where(
         and(
           eq(artifactVersion.id, input.versionId),
@@ -240,13 +275,14 @@ export async function transitionArtifactVersionStatus(
       correlationId: randomUUID(),
       causationId: input.causationId ?? null,
       actor: input.actor,
-      type: "artifact.status_changed",
+      // §A: the single named event for this exact edge.
+      type: eventForArtifactTransition(current, input.toStatus),
+      // §C lifecycle payload shape.
       payload: {
         artifactId: version.artifactId,
         versionId: input.versionId,
-        versionNumber: version.versionNumber,
-        from: current,
-        to: input.toStatus,
+        fromStatus: current,
+        toStatus: input.toStatus,
       },
     });
 
@@ -255,6 +291,118 @@ export async function transitionArtifactVersionStatus(
       artifactId: version.artifactId,
       fromStatus: current,
       toStatus: input.toStatus,
+      eventId: event.id,
+    };
+  });
+}
+
+export interface EditDraftContentInput {
+  versionId: string;
+  /** Optional compare-and-swap token: the status the caller expects. */
+  expectedStatus?: ArtifactStatus;
+  newBodyMarkdown: string;
+  claimsManifestJson?: unknown;
+  actor: EventActor;
+  source?: string;
+  causationId?: string | null;
+}
+
+export interface EditDraftContentResult {
+  versionId: string;
+  artifactId: string;
+  previousContentHash: string;
+  contentHash: string;
+  eventId: string;
+}
+
+/**
+ * In-place draft edit (PATCH-SET-02 §B): rewrites a `draft` version's
+ * `body_markdown` in place, recomputes `content_hash` (§S3), and emits
+ * `artifact.draft_edited`. Permitted ONLY while the version is `draft` — the
+ * service rejects a non-draft target (ArtifactNotDraftError) and the DB
+ * status-gated trigger is the backstop. The SAME version row is mutated; no
+ * new version is created (post-approval content changes go through revision).
+ */
+export async function editDraftContent(
+  db: Db,
+  input: EditDraftContentInput,
+): Promise<EditDraftContentResult> {
+  return db.transaction(async (tx: Db) => {
+    const [version] = await tx
+      .select()
+      .from(artifactVersion)
+      .where(eq(artifactVersion.id, input.versionId))
+      .limit(1);
+
+    if (!version) {
+      throw new ArtifactVersionNotFoundError(input.versionId);
+    }
+
+    const current = version.approvalStatus as ArtifactStatus;
+    if (input.expectedStatus !== undefined && current !== input.expectedStatus) {
+      throw new StaleArtifactVersionError(input.expectedStatus, current);
+    }
+    if (current !== "draft") {
+      throw new ArtifactNotDraftError(input.versionId, current);
+    }
+
+    // Resolve the artifact's product for the event envelope (§B0 scoping).
+    const [record] = await tx
+      .select({ productId: artifactRecord.productId })
+      .from(artifactRecord)
+      .where(eq(artifactRecord.id, version.artifactId))
+      .limit(1);
+
+    const previousContentHash = version.contentHash;
+    const contentHash = computeContentHash(input.newBodyMarkdown);
+
+    const versionUpdate: Record<string, unknown> = {
+      bodyMarkdown: input.newBodyMarkdown,
+      contentHash,
+      updatedAt: new Date(),
+    };
+    if (input.claimsManifestJson !== undefined) {
+      versionUpdate.claimsManifestJson = input.claimsManifestJson;
+    }
+
+    // CAS guard on `draft` closes the race with a concurrent transition out of
+    // draft; the status-gated trigger also blocks any non-draft mutation.
+    const updated = await tx
+      .update(artifactVersion)
+      .set(versionUpdate)
+      .where(
+        and(eq(artifactVersion.id, input.versionId), eq(artifactVersion.approvalStatus, "draft")),
+      )
+      .returning();
+
+    if (updated.length === 0) {
+      throw new StaleArtifactVersionError("draft", current);
+    }
+
+    const event = await writeEvent(tx, {
+      workspaceId: version.workspaceId,
+      productId: record?.productId ?? null,
+      entityType: "ArtifactVersion",
+      entityId: input.versionId,
+      source: input.source ?? "api",
+      correlationId: randomUUID(),
+      causationId: input.causationId ?? null,
+      actor: input.actor,
+      type: "artifact.draft_edited",
+      // §C payload shape.
+      payload: {
+        artifactId: version.artifactId,
+        versionId: input.versionId,
+        previousContentHash,
+        contentHash,
+      },
+    });
+
+    return {
+      versionId: input.versionId,
+      artifactId: version.artifactId,
+      previousContentHash,
+      contentHash,
       eventId: event.id,
     };
   });
@@ -335,11 +483,11 @@ export async function createArtifactRevision(
       causationId: input.causationId ?? null,
       actor: input.actor,
       type: "artifact.version_created",
+      // §C payload shape.
       payload: {
         artifactId: input.artifactId,
         versionId: version.id,
         versionNumber: nextNumber,
-        contentHash,
       },
     });
 

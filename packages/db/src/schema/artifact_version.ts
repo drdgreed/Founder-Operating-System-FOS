@@ -38,6 +38,10 @@ export const artifactVersion = pgTable(
       .default(sql`'{}'::jsonb`),
     // §E2 / §12.2: authoritative lifecycle carrier.
     approvalStatus: artifactLifecycleStatusEnum("approval_status").notNull().default("draft"),
+    // §9.13 / PATCH-SET-02 §B: set on the first transition OUT of `draft`
+    // (draft -> in_review or draft -> superseded). NULL while still a draft;
+    // once set, content is locked (enforced by the status-gated trigger).
+    immutableAt: timestamp("immutable_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

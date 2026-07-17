@@ -11,6 +11,8 @@ import {
   LEGAL_ARTIFACT_EDGES,
   ILLEGAL_ARTIFACT_EDGES,
   ARTIFACT_STATUSES,
+  ARTIFACT_TRANSITION_EVENTS,
+  eventForArtifactTransition,
 } from "../artifact-transitions.js";
 import { artifactVersion } from "../../schema/artifact_version.js";
 import { artifactRecord } from "../../schema/artifact_record.js";
@@ -41,7 +43,22 @@ describe("artifact version transition service (spec §12.2 — full transition m
     expect(ARTIFACT_STATUSES).toHaveLength(10);
   });
 
-  it(`FOS0-ART-10: covers all ${LEGAL_ARTIFACT_EDGES.length} legal §12.2 edges — each succeeds, updates approval_status + record mirror, emits artifact.status_changed`, async () => {
+  it("FOS0-ART-09b: the (from→to)→event map (PATCH-SET-02 §A) covers exactly the 14 legal edges — no generic status_changed", () => {
+    const mappedEdges = ARTIFACT_STATUSES.flatMap((from) =>
+      Object.keys(ARTIFACT_TRANSITION_EVENTS[from]).map((to) => `${from}->${to}`),
+    ).sort();
+    const legalEdges = LEGAL_ARTIFACT_EDGES.map(([from, to]) => `${from}->${to}`).sort();
+    expect(mappedEdges).toEqual(legalEdges);
+    expect(mappedEdges).toHaveLength(14);
+
+    // No event maps to the retired generic name.
+    const allEvents = ARTIFACT_STATUSES.flatMap((from) =>
+      Object.values(ARTIFACT_TRANSITION_EVENTS[from]),
+    );
+    expect(allEvents).not.toContain("artifact.status_changed");
+  });
+
+  it(`FOS0-ART-10: covers all ${LEGAL_ARTIFACT_EDGES.length} legal §12.2 edges — each succeeds, updates approval_status + record mirror, emits its SPECIFIC §A event`, async () => {
     expect(LEGAL_ARTIFACT_EDGES.length).toBe(14);
 
     for (const [from, to] of LEGAL_ARTIFACT_EDGES) {
@@ -78,13 +95,14 @@ describe("artifact version transition service (spec §12.2 — full transition m
         .from(operationalEvent)
         .where(eq(operationalEvent.entityId, version.id));
       expect(events).toHaveLength(1);
-      expect(events[0]!.type).toBe("artifact.status_changed");
+      // Granular §A event — the specific name for THIS edge, not a generic one.
+      expect(events[0]!.type).toBe(eventForArtifactTransition(from, to));
+      // §C lifecycle payload shape.
       expect(events[0]!.payload).toEqual({
         artifactId: record.id,
         versionId: version.id,
-        versionNumber: 1,
-        from,
-        to,
+        fromStatus: from,
+        toStatus: to,
       });
     }
   });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eventEnvelopeSchema, type EventActor } from "@fos/contracts";
+import { eventEnvelopeSchema, validateEventPayload, type EventActor } from "@fos/contracts";
 import { operationalEvent } from "../schema/operational_event.js";
 import type { Db } from "./types.js";
 
@@ -50,6 +50,12 @@ export async function writeEvent(db: Db, input: WriteEventInput): Promise<Writte
     type: input.type,
     payload: input.payload,
   });
+
+  // Per-type payload validation (PATCH-SET-01 §S1 / PATCH-SET-02 §C). Scoped
+  // to registered `artifact.*` types; other domains pass through until their
+  // slice registers schemas. Runs before insert so an invalid payload never
+  // reaches the append-only log.
+  validateEventPayload(envelope.type, envelope.payload);
 
   await db.insert(operationalEvent).values({
     id: envelope.id,

@@ -1,0 +1,1 @@
+ALTER TABLE "artifact_version" ADD COLUMN "immutable_at" timestamp with time zone;
