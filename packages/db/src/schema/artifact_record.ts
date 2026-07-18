@@ -95,6 +95,8 @@ export const artifactRecord = pgTable("artifact_record", {
   // source). Nullable and intentionally WITHOUT an FK: adding one would create
   // a circular artifact_record <-> artifact_version constraint. Integrity is
   // anchored on the child side (artifact_version.artifact_id -> artifact_record.id).
+  // A same-record check (current_version_id, when set, must belong to THIS
+  // record) is enforced by a DB trigger, migration 0007 (issue #8).
   currentVersionId: uuid("current_version_id"),
   // §E2: DERIVED read-only mirror of the current version's approval_status.
   // Never written except in lockstep with a version transition/revision.

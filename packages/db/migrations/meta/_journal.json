@@ -50,6 +50,13 @@
       "when": 1784304596500,
       "tag": "0006_milky_sunfire",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784407512109,
+      "tag": "0007_artifact_record_current_version_same_record",
+      "breakpoints": true
     }
   ]
 }
