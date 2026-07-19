@@ -145,10 +145,16 @@ export async function retryFailedReprojections(
 
       await projectOpportunity(db, client, { opportunity, dataSourceId });
       result.reprojectionRetried += 1;
-    } catch {
+    } catch (err) {
       // Still failing (e.g. Notion still down) — already `'failed'`, but
       // re-set defensively in case a concurrent process flipped it; isolated
-      // so one stuck page can't block healing the rest.
+      // so one stuck page can't block healing the rest. Log it (issue #38
+      // review NIT) so a persistently-failing page is visible to operators,
+      // not just a silent counter — message only, never payload/secrets.
+      console.error(
+        `[retryFailedReprojections] re-projection still failing for entity_id=${row.entityId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
       await markProjectionFailed(db, workspaceId, row.entityId);
       result.reprojectionStillFailing += 1;
     }
@@ -234,7 +240,18 @@ export async function executeStageCommands(
   // 1) before touching new commands — cheap, and means a page that was
   // stale purely because of a transient Notion error catches up on the very
   // next poll cycle instead of sitting in a false conflict.
-  await retryFailedReprojections(db, client, input, result);
+  //
+  // Isolated from the primary job (issue #38 review): a fault in the
+  // self-heal phase itself (e.g. the `failed`-rows SELECT) must NOT abort
+  // new-command execution — applying commands is the executor's core duty.
+  try {
+    await retryFailedReprojections(db, client, input, result);
+  } catch (err) {
+    console.error(
+      "[executeStageCommands] self-heal phase failed; continuing to command processing:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
   // Oldest-first per the issue's Build spec; the latest-intent resolution
   // below re-derives "current" per target entity regardless of load order.
