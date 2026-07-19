@@ -88,6 +88,10 @@ export const workspaceCommand = pgTable(
     idempotencyKey: text("idempotency_key").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // §11.5 `executed_at` — added by 0.2e (issue #36): stamped when the
+    // executor (`executeStageCommands`) drives this command to `succeeded`.
+    // Left nullable/unset by every other status.
+    executedAt: timestamp("executed_at", { withTimezone: true }),
   },
   (table) => ({
     idempotencyKeyUnique: uniqueIndex("workspace_command_idempotency_key_unique").on(
