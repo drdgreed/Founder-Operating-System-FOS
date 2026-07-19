@@ -17,6 +17,11 @@ export {
   type CaptureStageCommandsResult,
 } from "./capture-stage-command.js";
 export {
+  executeStageCommands,
+  type ExecuteStageCommandsInput,
+  type ExecuteStageCommandsResult,
+} from "./execute-stage-commands.js";
+export {
   readRichTextProperty,
   readNumberProperty,
   readSelectProperty,

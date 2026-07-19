@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_command" ADD COLUMN "executed_at" timestamp with time zone;
