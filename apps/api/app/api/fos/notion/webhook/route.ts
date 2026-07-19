@@ -37,5 +37,15 @@ export async function POST(req: NextRequest) {
     rawBody,
     signatureHeader,
   );
+  if (result.logError) {
+    // The fetch-latest optimizer failed but the request is ack'd 200 (the
+    // poll loop backstops correctness — see handleNotionWebhook). Record it
+    // server-side so the failing optimizer isn't invisible to operators.
+    // Log only the message, never the request body or any secret.
+    console.error(
+      "[notion-webhook] fetch-latest trigger failed:",
+      result.logError instanceof Error ? result.logError.message : String(result.logError),
+    );
+  }
   return NextResponse.json(result.body, { status: result.status });
 }

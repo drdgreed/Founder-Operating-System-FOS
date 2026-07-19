@@ -71,7 +71,7 @@ export async function handleNotionWebhook(
   config: NotionWebhookConfig,
   rawBody: string,
   signatureHeader: string | null,
-): Promise<HandlerResult> {
+): Promise<HandlerResult & { logError?: unknown }> {
   const reconcileFn = deps.reconcileFn ?? reconcile;
   const captureFn = deps.captureStageCommandsFn ?? captureStageCommands;
 
@@ -132,15 +132,26 @@ export async function handleNotionWebhook(
     // batched deliveries are fine because a re-poll just re-derives current
     // state; `reconcile`/`captureStageCommands` already dedup on their own
     // keys, so no new webhook-delivery dedup table is needed here.
-    await reconcileFn(deps.db, deps.notionClient, {
-      workspaceId: config.workspaceId,
-      dataSourceId: config.dataSourceId,
-    });
-    await captureFn(deps.db, deps.notionClient, {
-      workspaceId: config.workspaceId,
-      dataSourceId: config.dataSourceId,
-      workspaceIntegrationId: config.workspaceIntegrationId,
-    });
+    try {
+      await reconcileFn(deps.db, deps.notionClient, {
+        workspaceId: config.workspaceId,
+        dataSourceId: config.dataSourceId,
+      });
+      await captureFn(deps.db, deps.notionClient, {
+        workspaceId: config.workspaceId,
+        dataSourceId: config.dataSourceId,
+        workspaceIntegrationId: config.workspaceIntegrationId,
+      });
+    } catch (err) {
+      // The webhook is a pure OPTIMIZER; a failed fetch-latest loses only
+      // latency, never data — the authoritative poll loop (0.2c/0.2d)
+      // re-derives this change on its next cycle. Ack 200 (deliberately NOT
+      // 5xx: a persistent trigger failure must not make Notion hammer this
+      // endpoint under its 8x/24h retry policy, amplifying an outage), and
+      // surface the error via `logError` for the route to record so the
+      // failing optimizer is not silent to operators.
+      return { status: 200, body: { status: "ok" }, logError: err };
+    }
   }
 
   // A signed-but-unrecognized event type is ack'd without action (safe

@@ -118,6 +118,39 @@ describe("handleNotionWebhook (issue #39, slice 0.2f — SECURITY-CRITICAL)", ()
     });
   });
 
+  it("FOS0-WHK-15: a fetch-latest trigger failure is ack'd 200 (poll loop backstops) with the error surfaced via logError, never an unhandled throw", async () => {
+    const { captureCalls, captureStageCommandsFn } = stubTriggers();
+    const rawBody = eventBody();
+    const config = baseConfig();
+    const boom = new Error("reconcile failed (simulated DB fault)");
+    const throwingReconcile = async (
+      _db: Db,
+      _client: NotionClient,
+      _input: ReconcileInput,
+    ): Promise<ReconcileResult> => {
+      throw boom;
+    };
+
+    const result = await handleNotionWebhook(
+      {
+        db: {} as Db,
+        notionClient: unusedNotionClient(),
+        reconcileFn: throwingReconcile,
+        captureStageCommandsFn,
+      },
+      config,
+      rawBody,
+      sign(rawBody),
+    );
+
+    // Optimizer failure must NOT become an unhandled 500 or lose the request:
+    // ack 200 (poll loop is the authoritative backstop) and surface the error.
+    expect(result.status).toBe(200);
+    expect(result.logError).toBe(boom);
+    // reconcile threw first, so capture never ran.
+    expect(captureCalls).toHaveLength(0);
+  });
+
   it("FOS0-WHK-07: invalid signature -> 401, fetch-latest NOT triggered", async () => {
     const { reconcileCalls, captureCalls, reconcileFn, captureStageCommandsFn } = stubTriggers();
     const rawBody = eventBody();
