@@ -539,7 +539,7 @@ describe("executeStageCommands (issue #36, slice 0.2e — controlled-command exe
         targetEntityId: opportunity.id,
         targetVersion: 1,
         from: "new_lead",
-        to: "contacted",
+        to: "disqualified",
         createdAt: sameInstant,
         idempotencyKey: "key-b",
       });
@@ -560,7 +560,7 @@ describe("executeStageCommands (issue #36, slice 0.2e — controlled-command exe
       const loserId = a.id > b.id ? b.id : a.id;
       expect((await readCommand(db, winnerId)).status).toBe("succeeded");
       expect((await readCommand(db, loserId)).status).toBe("rejected");
-      const expectedStage = winnerId === a.id ? "reviewing" : "contacted";
+      const expectedStage = winnerId === a.id ? "reviewing" : "disqualified";
       expect((await readOpportunity(db, opportunity.id)).stage).toBe(expectedStage);
     } finally {
       await close();
