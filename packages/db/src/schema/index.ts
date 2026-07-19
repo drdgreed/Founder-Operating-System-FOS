@@ -28,6 +28,13 @@
  *   workspace_command (§11.5, status model §E1) — the controlled-command
  *   CAPTURE path. Founder Stage edits become `propose_opportunity_stage_change`
  *   commands in `received` status; validate/execute/Approval routing is 0.2e.
+ *
+ * Slice P1.0 ("Phase-1 domain migrations", ADR-07 D5/D8/D10) adds:
+ *   agent_run (D5, the agent audit spine), feature_flag (D8, per-agent
+ *   shadow|review|live gating), enrollment_assessment (spec §6.4), and 4
+ *   nullable attribution columns on enrollment_opportunity (campaign_id,
+ *   first_touch_source, last_touch_source, attribution_confidence).
+ *   Schema + migrations only — no runtime/agent code (that's P1.1/P1.2).
  */
 export * from "./fos_workspace.js";
 export * from "./product.js";
@@ -41,3 +48,6 @@ export * from "./approval.js";
 export * from "./workspace_integration.js";
 export * from "./projection.js";
 export * from "./workspace_command.js";
+export * from "./agent_run.js";
+export * from "./feature_flag.js";
+export * from "./enrollment_assessment.js";

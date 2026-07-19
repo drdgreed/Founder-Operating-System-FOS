@@ -70,6 +70,16 @@ export const enrollmentOpportunity = pgTable("enrollment_opportunity", {
   closedAt: timestamp("closed_at", { withTimezone: true }),
   // Optimistic concurrency (spec §9.4 `version`).
   version: integer("version").notNull().default(1),
+  // Attribution extensions (ADR-07 D10, spec §6.1, issue #48 P1.0). The
+  // `Campaign` table lands in a later slice (P1.6) — `campaign_id` is a bare
+  // nullable uuid with NO FK yet, same pattern as `offer_id` above; the FK is
+  // added when Campaign exists.
+  campaignId: uuid("campaign_id"),
+  firstTouchSource: text("first_touch_source"),
+  lastTouchSource: text("last_touch_source"),
+  // Type not specified by spec §6.1 (same ambiguity as fit_confidence in
+  // enrollment_assessment); modeled as text. FLAG — see PR description.
+  attributionConfidence: text("attribution_confidence"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
