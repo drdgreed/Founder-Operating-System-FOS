@@ -383,4 +383,187 @@ describe("executeStageCommands (issue #36, slice 0.2e — controlled-command exe
       await close();
     }
   });
+
+  it("FOS0-EXE-06: a command whose target opportunity is missing is rejected, and does NOT abort the batch (poison-pill isolation)", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1, stage: "new_lead" });
+      await seedProjectionRow(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: opportunity.id,
+        providerPageId: "notion-page-1",
+        fosVersion: 1,
+      });
+      // A command whose target does not exist (0.2c can leave orphaned commands).
+      const orphan = await insertCommand(db, {
+        workspaceId: opportunity.workspaceId,
+        targetEntityId: "00000000-0000-0000-0000-0000000000ff",
+        targetVersion: 1,
+        from: "new_lead",
+        to: "reviewing",
+        idempotencyKey: "key-orphan",
+      });
+      // ...alongside a perfectly good command in the same run.
+      const good = await insertCommand(db, {
+        workspaceId: opportunity.workspaceId,
+        targetEntityId: opportunity.id,
+        targetVersion: 1,
+        from: "new_lead",
+        to: "reviewing",
+        idempotencyKey: "key-good",
+      });
+      const { client } = makeMockNotion("notion-page-1");
+
+      const result = await executeStageCommands(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      // The orphan is rejected, the good command STILL executes — one bad
+      // command cannot starve the queue.
+      expect(result.rejectedInvalid).toBe(1);
+      expect(result.succeeded).toBe(1);
+      expect((await readCommand(db, orphan.id)).status).toBe("rejected");
+      expect((await readCommand(db, good.id)).status).toBe("succeeded");
+      expect((await readOpportunity(db, opportunity.id)).stage).toBe("reviewing");
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-EXE-07: a command whose target opportunity is in a DIFFERENT workspace is rejected, canonical UNCHANGED (cross-tenant guard)", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity: mine } = await seedOpportunity(db, { version: 1, stage: "new_lead" });
+      // A second, independent workspace + opportunity.
+      const { opportunity: theirs } = await seedOpportunity(db, { version: 1, stage: "new_lead" });
+      expect(theirs.workspaceId).not.toBe(mine.workspaceId);
+
+      // A command in MY workspace that (via a tampered/orphaned row) targets
+      // THEIR opportunity, with a version that would otherwise match.
+      const command = await insertCommand(db, {
+        workspaceId: mine.workspaceId,
+        targetEntityId: theirs.id,
+        targetVersion: 1,
+        from: "new_lead",
+        to: "reviewing",
+        idempotencyKey: "key-cross",
+      });
+      const { client } = makeMockNotion("notion-page-1");
+
+      const result = await executeStageCommands(db, client, {
+        workspaceId: mine.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      expect(result.rejectedInvalid).toBe(1);
+      expect(result.succeeded).toBe(0);
+      expect((await readCommand(db, command.id)).status).toBe("rejected");
+      // Their opportunity is untouched — no cross-tenant mutation.
+      expect((await readOpportunity(db, theirs.id)).stage).toBe("new_lead");
+      expect((await readOpportunity(db, theirs.id)).version).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-EXE-08: a re-projection (Notion write) failure leaves the command succeeded (canonical correct) and does not abort the batch", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1, stage: "new_lead" });
+      await seedProjectionRow(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: opportunity.id,
+        providerPageId: "notion-page-1",
+        fosVersion: 1,
+      });
+      const command = await insertCommand(db, {
+        workspaceId: opportunity.workspaceId,
+        targetEntityId: opportunity.id,
+        targetVersion: 1,
+        from: "new_lead",
+        to: "reviewing",
+        idempotencyKey: "key-1",
+      });
+      // Notion write (the re-projection PATCH) fails hard.
+      const fetchImpl: FetchLike = async (path, init) => {
+        const method = init?.method ?? "GET";
+        if (method === "PATCH") throw new Error("notion unavailable");
+        throw new Error(`unexpected call in mock: ${method} ${path}`);
+      };
+      const client = new NotionClient({ fetchImpl, requestsPerSecond: 100 });
+
+      const result = await executeStageCommands(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      // Transition committed: canonical is correct and the command is succeeded.
+      expect(result.succeeded).toBe(1);
+      expect(result.reprojectionDeferred).toBe(1);
+      expect(result.failed).toBe(0); // NOT counted as a batch failure
+      expect((await readCommand(db, command.id)).status).toBe("succeeded");
+      const updated = await readOpportunity(db, opportunity.id);
+      expect(updated.stage).toBe("reviewing");
+      expect(updated.version).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-EXE-09: two commands with an identical created_at resolve deterministically (highest id wins) — #35 tie-break", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1, stage: "new_lead" });
+      await seedProjectionRow(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: opportunity.id,
+        providerPageId: "notion-page-1",
+        fosVersion: 1,
+      });
+      const sameInstant = new Date("2026-07-19T13:00:00Z");
+      const a = await insertCommand(db, {
+        workspaceId: opportunity.workspaceId,
+        targetEntityId: opportunity.id,
+        targetVersion: 1,
+        from: "new_lead",
+        to: "reviewing",
+        createdAt: sameInstant,
+        idempotencyKey: "key-a",
+      });
+      const b = await insertCommand(db, {
+        workspaceId: opportunity.workspaceId,
+        targetEntityId: opportunity.id,
+        targetVersion: 1,
+        from: "new_lead",
+        to: "contacted",
+        createdAt: sameInstant,
+        idempotencyKey: "key-b",
+      });
+      const { client } = makeMockNotion("notion-page-1");
+
+      const result = await executeStageCommands(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      // Exactly one executes, one superseded — #35 invariant.
+      expect(result.succeeded).toBe(1);
+      expect(result.supersededStale).toBe(1);
+
+      // Deterministic: the lexically-greater id is the candidate (asc(id) sort +
+      // last-seen-max), so the winner is stable across runs.
+      const winnerId = a.id > b.id ? a.id : b.id;
+      const loserId = a.id > b.id ? b.id : a.id;
+      expect((await readCommand(db, winnerId)).status).toBe("succeeded");
+      expect((await readCommand(db, loserId)).status).toBe("rejected");
+      const expectedStage = winnerId === a.id ? "reviewing" : "contacted";
+      expect((await readOpportunity(db, opportunity.id)).stage).toBe(expectedStage);
+    } finally {
+      await close();
+    }
+  });
 });

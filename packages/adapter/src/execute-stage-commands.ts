@@ -37,6 +37,24 @@ export interface ExecuteStageCommandsResult {
    * executed, marked `rejected`.
    */
   supersededStale: number;
+  /**
+   * Command whose `target_entity_id` names no opportunity in this workspace
+   * (a missing/deleted target, or — defense-in-depth vs a tampered command
+   * row from untrusted provider input — a cross-workspace target) — marked
+   * `rejected`, canonical untouched.
+   */
+  rejectedInvalid: number;
+  /**
+   * Transition succeeded (canonical is correct) but the follow-up Notion
+   * re-projection threw. The command stays `succeeded`; the page is left
+   * stale for a later reconcile/re-projection rather than aborting the batch.
+   */
+  reprojectionDeferred: number;
+  /**
+   * An unexpected error on one entity group, isolated so it cannot abort the
+   * batch (the command is left `received` for the next run to retry).
+   */
+  failed: number;
 }
 
 function emptyResult(): ExecuteStageCommandsResult {
@@ -46,6 +64,9 @@ function emptyResult(): ExecuteStageCommandsResult {
     conflicts: 0,
     rejectedIllegal: 0,
     supersededStale: 0,
+    rejectedInvalid: 0,
+    reprojectionDeferred: 0,
+    failed: 0,
   };
 }
 
@@ -61,7 +82,9 @@ function emptyResult(): ExecuteStageCommandsResult {
 function serviceActor() {
   return {
     type: "system" as const,
-    id: process.env.FOS_SERVICE_ACTOR_ID ?? "notion-command-executor",
+    // `||` (not `??`) so a misconfigured empty-string env var also falls back
+    // to the stable default rather than writing an empty actor into audit events.
+    id: process.env.FOS_SERVICE_ACTOR_ID || "notion-command-executor",
   };
 }
 
@@ -102,6 +125,15 @@ function serviceActor() {
  * `succeeded`/`rejected`/`conflict` command is never re-executed — re-running
  * `executeStageCommands` after a prior run is a no-op for every command it
  * already resolved.
+ *
+ * Robustness: (a) the target opportunity is re-checked to exist AND belong to
+ * the command's workspace before any mutation (defense-in-depth vs a tampered/
+ * cross-workspace `target_entity_id` from untrusted provider input) — a bad
+ * target is `rejected`, never mutated; (b) each entity group is isolated so
+ * one unexpected failure cannot abort the batch and starve other commands;
+ * (c) a re-projection (Notion) failure leaves the command `succeeded`
+ * (canonical is committed and correct) and is counted, not thrown — the page
+ * is left for a later reconcile/re-projection rather than losing the batch.
  */
 export async function executeStageCommands(
   db: Db,
@@ -124,7 +156,10 @@ export async function executeStageCommands(
         eq(workspaceCommand.status, "received"),
       ),
     )
-    .orderBy(asc(workspaceCommand.createdAt));
+    // asc(id) is the deterministic tie-break for commands sharing a created_at:
+    // the candidate scan below picks the last-seen max, so equal-timestamp rows
+    // resolve to the highest id every run (audit-reproducible).
+    .orderBy(asc(workspaceCommand.createdAt), asc(workspaceCommand.id));
   result.commandsLoaded = received.length;
 
   const byEntity = new Map<string, WorkspaceCommandRow[]>();
@@ -136,8 +171,8 @@ export async function executeStageCommands(
 
   for (const group of byEntity.values()) {
     // #35: the newest `created_at` in the group is the founder's current
-    // intent. Ties (identical timestamps) resolve to the last one seen in
-    // the oldest-first load order — deterministic, though not spec-defined.
+    // intent. Load order is asc(createdAt, id), so the last-seen max resolves
+    // ties deterministically to the highest id.
     let candidate = group[0]!;
     for (const command of group) {
       if (command.createdAt.getTime() >= candidate.createdAt.getTime()) {
@@ -145,13 +180,22 @@ export async function executeStageCommands(
       }
     }
 
-    for (const stale of group) {
-      if (stale.id === candidate.id) continue;
-      await supersedeStaleCommand(db, stale, candidate);
-      result.supersededStale += 1;
-    }
+    // Per-group isolation: one entity's unexpected failure (e.g. a target
+    // deleted out from under a transition, a DB fault) must not abort the
+    // whole batch and starve every other entity's commands. The command is
+    // left in whatever state it reached (a pre-mutation throw leaves it
+    // `received` for the next run to retry).
+    try {
+      for (const stale of group) {
+        if (stale.id === candidate.id) continue;
+        await supersedeStaleCommand(db, stale, candidate);
+        result.supersededStale += 1;
+      }
 
-    await executeCandidate(db, client, dataSourceId, candidate, result);
+      await executeCandidate(db, client, dataSourceId, candidate, result);
+    } catch {
+      result.failed += 1;
+    }
   }
 
   return result;
@@ -201,6 +245,49 @@ async function executeCandidate(
 ): Promise<void> {
   const payload = command.payloadJson as { from: OpportunityStage; to: OpportunityStage };
 
+  // Defense-in-depth on the mutation path (the command row originates from
+  // untrusted Notion input): the target opportunity must exist AND belong to
+  // the command's workspace. `transitionOpportunity` loads by id only, so
+  // without this a tampered/cross-workspace `target_entity_id` whose version
+  // happened to match would be mutated. A missing target (0.2c can leave
+  // orphaned commands) is likewise rejected here rather than thrown.
+  const [target] = await db
+    .select({ workspaceId: enrollmentOpportunity.workspaceId })
+    .from(enrollmentOpportunity)
+    .where(eq(enrollmentOpportunity.id, command.targetEntityId))
+    .limit(1);
+  if (!target || target.workspaceId !== command.workspaceId) {
+    const updated = await db
+      .update(workspaceCommand)
+      .set({
+        status: "rejected",
+        rejectionReason: target
+          ? "Target opportunity belongs to a different workspace"
+          : "Target opportunity does not exist",
+        updatedAt: new Date(),
+      })
+      .where(and(eq(workspaceCommand.id, command.id), eq(workspaceCommand.status, "received")))
+      .returning({ id: workspaceCommand.id });
+    if (updated.length === 0) return;
+    await writeEvent(db, {
+      workspaceId: command.workspaceId,
+      entityType: "WorkspaceCommand",
+      entityId: command.id,
+      source: "notion_command",
+      correlationId: command.correlationId,
+      causationId: null,
+      actor: serviceActor(),
+      type: "workspace_command.rejected",
+      payload: {
+        commandId: command.id,
+        reason: "invalid_target",
+        targetEntityId: command.targetEntityId,
+      },
+    });
+    result.rejectedInvalid += 1;
+    return;
+  }
+
   try {
     const transition = await transitionOpportunity(db, {
       opportunityId: command.targetEntityId,
@@ -246,19 +333,27 @@ async function executeCandidate(
     // RE-PROJECT: reload the updated opportunity and refresh its Notion page
     // so `FOS Version` + `Sync Status` reflect the new canonical version —
     // otherwise the next 0.2c reconcile sees the bumped version as a false
-    // §8.3 conflict.
-    const [updatedOpportunity] = await db
-      .select()
-      .from(enrollmentOpportunity)
-      .where(eq(enrollmentOpportunity.id, command.targetEntityId))
-      .limit(1);
-    if (!updatedOpportunity) {
-      throw new Error(
-        `executeStageCommands: EnrollmentOpportunity ${command.targetEntityId} vanished ` +
-          "after a successful transition",
-      );
+    // §8.3 conflict. This is a SEPARATE two-system write from the (already
+    // committed) transition + `succeeded` mark: if it throws, canonical is
+    // still correct and durable, so we must NOT undo the command or abort the
+    // batch — the page is left stale for a later reconcile/re-projection.
+    // (Automated re-projection retry / outbox is a tracked follow-up.)
+    try {
+      const [updatedOpportunity] = await db
+        .select()
+        .from(enrollmentOpportunity)
+        .where(eq(enrollmentOpportunity.id, command.targetEntityId))
+        .limit(1);
+      if (!updatedOpportunity) {
+        throw new Error(
+          `executeStageCommands: EnrollmentOpportunity ${command.targetEntityId} vanished ` +
+            "after a successful transition",
+        );
+      }
+      await projectOpportunity(db, client, { opportunity: updatedOpportunity, dataSourceId });
+    } catch {
+      result.reprojectionDeferred += 1;
     }
-    await projectOpportunity(db, client, { opportunity: updatedOpportunity, dataSourceId });
   } catch (err) {
     if (err instanceof StaleVersionError) {
       const updated = await db
