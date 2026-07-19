@@ -8,7 +8,7 @@ import {
   workspaceCommand,
 } from "@fos/db/schema";
 import * as services from "@fos/db/services";
-import { executeStageCommands } from "../execute-stage-commands.js";
+import { executeStageCommands, retryFailedReprojections } from "../execute-stage-commands.js";
 import { createTestDb, seedOpportunity } from "./test-db.js";
 
 // Pass-through mock so individual tests can vi.spyOn a named export (ESM
@@ -119,6 +119,22 @@ async function readOpportunity(db: TestDb, id: string) {
     .from(enrollmentOpportunity)
     .where(eq(enrollmentOpportunity.id, id));
   if (!row) throw new Error(`readOpportunity: no enrollment_opportunity row for ${id}`);
+  return row;
+}
+
+async function readProjection(db: TestDb, workspaceId: string, entityId: string) {
+  const [row] = await db
+    .select()
+    .from(projection)
+    .where(
+      and(
+        eq(projection.workspaceId, workspaceId),
+        eq(projection.entityType, "EnrollmentOpportunity"),
+        eq(projection.entityId, entityId),
+        eq(projection.provider, "notion"),
+      ),
+    );
+  if (!row) throw new Error(`readProjection: no projection row for ${entityId}`);
   return row;
 }
 
@@ -516,6 +532,169 @@ describe("executeStageCommands (issue #36, slice 0.2e — controlled-command exe
       const updated = await readOpportunity(db, opportunity.id);
       expect(updated.stage).toBe("reviewing");
       expect(updated.version).toBe(2);
+      // Issue #38 item 1: the projection is marked `failed` (not left
+      // silently `in_sync` at a stale version) so it's distinguishable from
+      // a genuine founder-edit conflict and eligible for auto-retry.
+      expect((await readProjection(db, opportunity.workspaceId, opportunity.id)).syncStatus).toBe(
+        "failed",
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-EXE-12 (issue #38 item 1): retryFailedReprojections heals a projection left `failed` by a prior transient Notion error", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1, stage: "reviewing" });
+      await seedProjectionRow(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: opportunity.id,
+        providerPageId: "notion-page-1",
+        fosVersion: 0, // stale — never successfully re-projected after the transition
+      });
+      // Directly force the `failed` state (simulating a prior run's deferred
+      // re-projection) rather than re-deriving it through executeStageCommands.
+      await db
+        .update(projection)
+        .set({ syncStatus: "failed" })
+        .where(
+          and(
+            eq(projection.workspaceId, opportunity.workspaceId),
+            eq(projection.entityType, "EnrollmentOpportunity"),
+            eq(projection.entityId, opportunity.id),
+            eq(projection.provider, "notion"),
+          ),
+        );
+
+      const { client, calls } = makeMockNotion("notion-page-1");
+
+      const result = await retryFailedReprojections(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      expect(result.reprojectionRetried).toBe(1);
+      expect(result.reprojectionStillFailing).toBe(0);
+      // Healed: back to in_sync at the CURRENT canonical version.
+      const healed = await readProjection(db, opportunity.workspaceId, opportunity.id);
+      expect(healed.syncStatus).toBe("in_sync");
+      expect(healed.fosVersion).toBe(1);
+      // The SAME page updated (PATCH) — never a duplicate created.
+      expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+      expect(calls.filter((c) => c.method === "POST" && c.path.endsWith("/pages"))).toHaveLength(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-EXE-13 (issue #38 item 1): a re-projection still failing on retry is left `failed` for the next run, isolated from other rows", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity: healthy } = await seedOpportunity(db, {
+        version: 1,
+        stage: "reviewing",
+      });
+      await seedProjectionRow(db, {
+        workspaceId: healthy.workspaceId,
+        productId: healthy.productId,
+        entityId: healthy.id,
+        providerPageId: "notion-page-healthy",
+        fosVersion: 0,
+      });
+      const { opportunity: stuck } = await seedOpportunity(db, {
+        workspaceId: healthy.workspaceId,
+        productId: healthy.productId,
+        version: 1,
+        stage: "reviewing",
+      });
+      await seedProjectionRow(db, {
+        workspaceId: stuck.workspaceId,
+        productId: stuck.productId,
+        entityId: stuck.id,
+        providerPageId: "notion-page-stuck",
+        fosVersion: 0,
+      });
+      for (const opp of [healthy, stuck]) {
+        await db
+          .update(projection)
+          .set({ syncStatus: "failed" })
+          .where(
+            and(
+              eq(projection.workspaceId, opp.workspaceId),
+              eq(projection.entityType, "EnrollmentOpportunity"),
+              eq(projection.entityId, opp.id),
+              eq(projection.provider, "notion"),
+            ),
+          );
+      }
+
+      // Notion still rejects the "stuck" page's PATCH, but accepts the
+      // healthy one's — proving one still-broken row can't block another.
+      const fetchImpl: FetchLike = async (path, init) => {
+        const method = init?.method ?? "GET";
+        if (method === "PATCH" && path.includes("notion-page-stuck")) {
+          throw new Error("notion still unavailable for this page");
+        }
+        if (method === "PATCH") {
+          return jsonResponse(200, { object: "page", id: path.split("/pages/")[1] });
+        }
+        throw new Error(`unexpected call in mock: ${method} ${path}`);
+      };
+      const client = new NotionClient({ fetchImpl, requestsPerSecond: 100 });
+
+      const result = await retryFailedReprojections(db, client, {
+        workspaceId: healthy.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      expect(result.reprojectionRetried).toBe(1);
+      expect(result.reprojectionStillFailing).toBe(1);
+      expect((await readProjection(db, healthy.workspaceId, healthy.id)).syncStatus).toBe(
+        "in_sync",
+      );
+      expect((await readProjection(db, stuck.workspaceId, stuck.id)).syncStatus).toBe("failed");
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-EXE-14 (issue #38 item 1): executeStageCommands self-heals a previously-failed re-projection at the START of the run, before processing new commands", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1, stage: "reviewing" });
+      await seedProjectionRow(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: opportunity.id,
+        providerPageId: "notion-page-1",
+        fosVersion: 0,
+      });
+      await db
+        .update(projection)
+        .set({ syncStatus: "failed" })
+        .where(
+          and(
+            eq(projection.workspaceId, opportunity.workspaceId),
+            eq(projection.entityType, "EnrollmentOpportunity"),
+            eq(projection.entityId, opportunity.id),
+            eq(projection.provider, "notion"),
+          ),
+        );
+      const { client } = makeMockNotion("notion-page-1");
+
+      // No new commands this run — the run's ONLY job is the outbox retry.
+      const result = await executeStageCommands(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      expect(result.commandsLoaded).toBe(0);
+      expect(result.reprojectionRetried).toBe(1);
+      expect((await readProjection(db, opportunity.workspaceId, opportunity.id)).syncStatus).toBe(
+        "in_sync",
+      );
     } finally {
       await close();
     }
@@ -586,6 +765,10 @@ describe("executeStageCommands (issue #36, slice 0.2e — controlled-command exe
         if (bad && input.opportunityId === bad.id) throw new Error("simulated unexpected DB fault");
         return realTransition(dbArg, input);
       });
+    // Issue #38 item 3: the group-level catch previously swallowed a hard
+    // fault with no log line — a caller that ignores `result.failed` would
+    // never know. Assert the diagnostic log actually fires.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       // Two opportunities in the SAME workspace so both are processed in one run.
       const {
@@ -643,8 +826,14 @@ describe("executeStageCommands (issue #36, slice 0.2e — controlled-command exe
       // Good command applied.
       expect((await readCommand(db, goodCommand.id)).status).toBe("succeeded");
       expect((await readOpportunity(db, good.id)).stage).toBe("reviewing");
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`target_entity_id=${bad.id}`),
+        expect.stringContaining("simulated unexpected DB fault"),
+      );
     } finally {
       spy.mockRestore();
+      errorSpy.mockRestore();
       await close();
     }
   });
