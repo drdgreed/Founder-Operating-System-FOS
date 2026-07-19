@@ -365,5 +365,8 @@ describe("handleNotionWebhook idempotency (real reconcile + captureStageCommands
     } finally {
       await ctx.close();
     }
-  });
+    // Heavy integration path (PGlite migrations + two full reconcile+capture
+    // cycles); raise the timeout above vitest's 5s default so it can't flake
+    // under CI/parallel-suite CPU contention (it runs in ~0.8s isolated).
+  }, 15000);
 });
