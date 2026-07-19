@@ -10,3 +10,5 @@ export {
   type ProjectOpportunityInput,
   type ProjectOpportunityResult,
 } from "./project-opportunity.js";
+export { reconcile, type ReconcileInput, type ReconcileResult } from "./reconcile.js";
+export { readRichTextProperty, readNumberProperty } from "./notion-properties.js";
