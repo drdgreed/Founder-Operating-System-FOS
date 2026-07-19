@@ -519,6 +519,61 @@ describe("@fos/agents runAgent — the 12-stage pipeline (ADR-07 D2, issue #50)"
 
     delete process.env.FOS_TEST_NOTION_TOKEN_UNUSED;
   });
+
+  it("FOS1-RT-17: a projection failure is ISOLATED — the run still succeeds (canonical committed), projectionDeferred flagged, never falsely errored", async () => {
+    const workspace = await seedWorkspace(ctx.db);
+    const inputSchema = z.object({ note: z.string() });
+    const outputSchema = z.object({ message: z.string() });
+    const definition: AgentDefinition<z.infer<typeof inputSchema>, z.infer<typeof outputSchema>> = {
+      key: "fos.test.projection-fails",
+      version: "1.0.0",
+      objective: "test-only: projection throws (simulated Notion outage)",
+      inputSchema,
+      outputSchema,
+      permittedTools: [],
+      permittedMemoryScopes: ["none"],
+      autonomyCeiling: "review",
+      featureFlagKey: "fos.test.projfail",
+      deterministicGates: [],
+      artifact: {
+        artifactType: "internal_note",
+        domain: "research",
+        buildTitle: () => "Projection-fail test",
+        buildBodyMarkdown: (_i, output) => output.message,
+      },
+      // Stage 11 is a non-canonical Notion write; simulate it failing.
+      projection: async () => {
+        throw new Error("simulated Notion outage");
+      },
+    };
+    await setFeatureFlag(ctx.db, {
+      workspaceId: workspace.id,
+      key: "fos.test.projfail",
+      enabled: true,
+      mode: "review",
+    });
+    const runContext: RunAgentContext = {
+      workspaceId: workspace.id,
+      actor: ACTOR,
+      trigger: TRIGGER,
+    };
+
+    // The projection throws, but stages 9-10 already committed the artifact +
+    // routed it to approval — the run must SUCCEED (not falsely error), and
+    // runAgent must NOT throw.
+    const result = await runAgent(
+      { db: ctx.db, modelClient: new FakeModelClient([validResult({ message: "hi" })]) },
+      definition,
+      { note: "x" },
+      runContext,
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(result.projectionDeferred).toBe(true);
+    const [run] = await ctx.db.select().from(agentRun).where(eq(agentRun.id, result.runId));
+    expect(run!.status).toBe("succeeded");
+    expect(run!.outputRef).toBe(result.artifact!.versionId);
+  });
 });
 
 describe("FOS1-RT-09: ModelClient is required (compile-time) + credential-reference safety", () => {

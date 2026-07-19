@@ -21,6 +21,10 @@ export interface RunAgentResult {
   artifact?: { artifactId: string; versionId: string };
   gateEvaluations?: GateEvaluation[];
   reason?: string;
+  /** True when the run succeeded (canonical committed) but the isolated
+   * stage-11 projection (a non-canonical Notion write) failed and was
+   * deferred to a later reconcile — the run is NOT failed for this. */
+  projectionDeferred?: boolean;
 }
 
 function triggerLabel(trigger: RunAgentContext["trigger"]): string {
@@ -325,9 +329,24 @@ export async function runAgent<TInput, TOutput>(
     }
 
     // ---- Stage 11: projection update (REUSE projectOpportunity-shaped
-    // hooks), per mode — never surfaced in shadow mode. ------------------
+    // hooks), per mode — never surfaced in shadow mode. ISOLATED (issue #50
+    // review / the 0.2e lesson): projection is a NON-CANONICAL external
+    // (Notion) side effect. Stages 9-10 already committed the canonical
+    // artifact and routed it to approval, so a projection failure must NOT
+    // fail the run — that would orphan an approvable artifact on an `error`
+    // run and duplicate it on retry. Catch it, record `projectionDeferred`,
+    // and still complete the run `succeeded`; a later reconcile re-projects.
+    let projectionDeferred = false;
     if (definition.projection && mode !== "shadow") {
-      await definition.projection({ deps, runContext, mode }, input, output);
+      try {
+        await definition.projection({ deps, runContext, mode }, input, output);
+      } catch (projectionErr) {
+        projectionDeferred = true;
+        console.error(
+          `[agent-runtime] projection failed for run ${runId} (canonical committed; run still succeeds):`,
+          projectionErr instanceof Error ? projectionErr.message : String(projectionErr),
+        );
+      }
     }
 
     // ---- Stage 12: metrics + audit --------------------------------------
@@ -339,7 +358,7 @@ export async function runAgent<TInput, TOutput>(
         latencyMs,
         costJson: usage,
         outputRef: artifactResult.versionId,
-        deterministicEvalJson: { evaluations: gateOutcome.evaluations },
+        deterministicEvalJson: { evaluations: gateOutcome.evaluations, projectionDeferred },
         secondaryEvalJson: secondaryEval,
         updatedAt: new Date(),
       })
@@ -361,6 +380,7 @@ export async function runAgent<TInput, TOutput>(
         artifactId: artifactResult.artifactId,
         versionId: artifactResult.versionId,
         mode,
+        projectionDeferred,
       },
     });
 
@@ -371,6 +391,7 @@ export async function runAgent<TInput, TOutput>(
       retryCount,
       artifact: { artifactId: artifactResult.artifactId, versionId: artifactResult.versionId },
       gateEvaluations: gateOutcome.evaluations,
+      projectionDeferred,
     };
   } catch (err) {
     // Fail closed on ANY unexpected error: the run row must never be left
