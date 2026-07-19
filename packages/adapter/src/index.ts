@@ -18,6 +18,7 @@ export {
 } from "./capture-stage-command.js";
 export {
   executeStageCommands,
+  retryFailedReprojections,
   type ExecuteStageCommandsInput,
   type ExecuteStageCommandsResult,
 } from "./execute-stage-commands.js";

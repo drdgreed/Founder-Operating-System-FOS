@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import { enrollmentOpportunity, workspaceCommand } from "@fos/db/schema";
+import { enrollmentOpportunity, projection, workspaceCommand } from "@fos/db/schema";
 import {
   IllegalTransitionError,
   StaleVersionError,
@@ -46,10 +46,19 @@ export interface ExecuteStageCommandsResult {
   rejectedInvalid: number;
   /**
    * Transition succeeded (canonical is correct) but the follow-up Notion
-   * re-projection threw. The command stays `succeeded`; the page is left
-   * stale for a later reconcile/re-projection rather than aborting the batch.
+   * re-projection threw. The `projection` row is marked `sync_status =
+   * 'failed'` (issue #38 item 1) — distinct from a genuine `'conflict'` (a
+   * founder edit reconcile detected) — so the NEXT run's `retryFailedReprojections`
+   * self-heals it automatically instead of parking the page in a false
+   * conflict until manual intervention.
    */
   reprojectionDeferred: number;
+  /** A previously-`failed` re-projection (issue #38 item 1) successfully
+   * retried and healed at the start of this run. */
+  reprojectionRetried: number;
+  /** A previously-`failed` re-projection retried this run but still failing
+   * (left `sync_status = 'failed'` for the next run). */
+  reprojectionStillFailing: number;
   /**
    * An unexpected error on one entity group, isolated so it cannot abort the
    * batch (the command is left `received` for the next run to retry).
@@ -66,8 +75,92 @@ function emptyResult(): ExecuteStageCommandsResult {
     supersededStale: 0,
     rejectedInvalid: 0,
     reprojectionDeferred: 0,
+    reprojectionRetried: 0,
+    reprojectionStillFailing: 0,
     failed: 0,
   };
+}
+
+/** Marks the `projection` row `sync_status = 'failed'` (issue #38 item 1 —
+ * the enum value issue #29 flagged as never written). A no-op if no row
+ * exists for this entity (can't happen for a command's target: 0.2d only
+ * ever captures a command for a page that already has a `projection` row). */
+async function markProjectionFailed(db: Db, workspaceId: string, entityId: string): Promise<void> {
+  await db
+    .update(projection)
+    .set({ syncStatus: "failed", updatedAt: new Date() })
+    .where(
+      and(
+        eq(projection.workspaceId, workspaceId),
+        eq(projection.entityType, TARGET_ENTITY_TYPE),
+        eq(projection.entityId, entityId),
+        eq(projection.provider, "notion"),
+      ),
+    );
+}
+
+/**
+ * Self-healing re-projection outbox (issue #38 item 1). Finds every
+ * `projection` row this workspace left `sync_status = 'failed'` (a prior
+ * transient Notion write failure — see `markProjectionFailed`) and retries
+ * `projectOpportunity` from the entity's CURRENT canonical state. Reuses
+ * `projectOpportunity` rather than reimplementing it: it's already
+ * idempotent (upserts the SAME page) and always projects whatever canonical
+ * says NOW, so a retry naturally catches up even if further transitions
+ * happened since the original failure — no separate "what changed" tracking
+ * needed. Each row is isolated (one still-broken page can't block healing
+ * the rest), mirroring the per-entity-group isolation in the main loop below.
+ */
+export async function retryFailedReprojections(
+  db: Db,
+  client: NotionClient,
+  input: ExecuteStageCommandsInput,
+  result: ExecuteStageCommandsResult = emptyResult(),
+): Promise<ExecuteStageCommandsResult> {
+  const { workspaceId, dataSourceId } = input;
+
+  const failedRows = await db
+    .select()
+    .from(projection)
+    .where(
+      and(
+        eq(projection.workspaceId, workspaceId),
+        eq(projection.entityType, TARGET_ENTITY_TYPE),
+        eq(projection.provider, "notion"),
+        eq(projection.syncStatus, "failed"),
+      ),
+    );
+
+  for (const row of failedRows) {
+    try {
+      const [opportunity] = await db
+        .select()
+        .from(enrollmentOpportunity)
+        .where(eq(enrollmentOpportunity.id, row.entityId))
+        .limit(1);
+      // Canonical vanished or moved workspaces — nothing sane to retry
+      // against; leave the row for reconcile/orphan handling rather than
+      // guessing at what to project.
+      if (!opportunity || opportunity.workspaceId !== workspaceId) continue;
+
+      await projectOpportunity(db, client, { opportunity, dataSourceId });
+      result.reprojectionRetried += 1;
+    } catch (err) {
+      // Still failing (e.g. Notion still down) — already `'failed'`, but
+      // re-set defensively in case a concurrent process flipped it; isolated
+      // so one stuck page can't block healing the rest. Log it (issue #38
+      // review NIT) so a persistently-failing page is visible to operators,
+      // not just a silent counter — message only, never payload/secrets.
+      console.error(
+        `[retryFailedReprojections] re-projection still failing for entity_id=${row.entityId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      await markProjectionFailed(db, workspaceId, row.entityId);
+      result.reprojectionStillFailing += 1;
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -143,6 +236,23 @@ export async function executeStageCommands(
   const { workspaceId, dataSourceId } = input;
   const result = emptyResult();
 
+  // Self-heal any re-projections a PRIOR run left `failed` (issue #38 item
+  // 1) before touching new commands — cheap, and means a page that was
+  // stale purely because of a transient Notion error catches up on the very
+  // next poll cycle instead of sitting in a false conflict.
+  //
+  // Isolated from the primary job (issue #38 review): a fault in the
+  // self-heal phase itself (e.g. the `failed`-rows SELECT) must NOT abort
+  // new-command execution — applying commands is the executor's core duty.
+  try {
+    await retryFailedReprojections(db, client, input, result);
+  } catch (err) {
+    console.error(
+      "[executeStageCommands] self-heal phase failed; continuing to command processing:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   // Oldest-first per the issue's Build spec; the latest-intent resolution
   // below re-derives "current" per target entity regardless of load order.
   const received = await db
@@ -193,7 +303,16 @@ export async function executeStageCommands(
       }
 
       await executeCandidate(db, client, dataSourceId, candidate, result);
-    } catch {
+    } catch (err) {
+      // Issue #38 item 3: a hard fault here was previously silent — visible
+      // only as a `failed` count in the returned result, invisible to any
+      // caller that doesn't inspect it. Log the target entity + error
+      // message (never the full command payload) so a poison-pill fault is
+      // never invisible, even though the batch itself is correctly isolated.
+      console.error(
+        `[executeStageCommands] group execution failed for target_entity_id=${candidate.targetEntityId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
       result.failed += 1;
     }
   }
@@ -336,8 +455,9 @@ async function executeCandidate(
     // §8.3 conflict. This is a SEPARATE two-system write from the (already
     // committed) transition + `succeeded` mark: if it throws, canonical is
     // still correct and durable, so we must NOT undo the command or abort the
-    // batch — the page is left stale for a later reconcile/re-projection.
-    // (Automated re-projection retry / outbox is a tracked follow-up.)
+    // batch — the page is left stale, but marked `sync_status = 'failed'`
+    // (issue #38 item 1) so the NEXT run's `retryFailedReprojections`
+    // self-heals it automatically instead of parking it in a false conflict.
     try {
       const [updatedOpportunity] = await db
         .select()
@@ -352,6 +472,7 @@ async function executeCandidate(
       }
       await projectOpportunity(db, client, { opportunity: updatedOpportunity, dataSourceId });
     } catch {
+      await markProjectionFailed(db, command.workspaceId, command.targetEntityId);
       result.reprojectionDeferred += 1;
     }
   } catch (err) {
