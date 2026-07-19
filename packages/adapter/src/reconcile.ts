@@ -1,11 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import { enrollmentOpportunity, projection, workspaceCommand } from "@fos/db/schema";
+import { enrollmentOpportunity, projection } from "@fos/db/schema";
 import type { Db } from "@fos/db/services";
 import type { NotionClient } from "@fos/notion";
-import {
-  enrollmentOpportunityReconcilableFields,
-  type EnrollmentOpportunityRow,
-} from "./enrollment-opportunity-mapper.js";
 import { readNumberProperty, readRichTextProperty } from "./notion-properties.js";
 
 export interface ReconcileInput {
@@ -16,14 +12,15 @@ export interface ReconcileInput {
 
 export interface ReconcileResult {
   pagesProcessed: number;
-  /** Pages whose `last_edited_time` <= their projection's `last_synced_at`. */
-  unchanged: number;
-  /** New `workspace_command` rows actually inserted (idempotency-deduped). */
-  commandsCreated: number;
-  /** Pages that flipped their projection to `sync_status = 'conflict'`
-   * (a `canonical_read_only` property changed, or a duplicate `FOS Record ID`). */
+  /** Pages whose page `FOS Version` matches canonical — projection is current. */
+  inSync: number;
+  /** Pages flipped to `sync_status = 'conflict'`: a page `FOS Version` that
+   * differs from canonical (§8.3 — the founder edited a stale projection, or
+   * canonical advanced underneath), an unreadable `FOS Version`, or a
+   * duplicate `FOS Record ID` across 2+ pages. */
   conflicts: number;
-  /** Pages carrying a `FOS Record ID` with no matching `projection` row. */
+  /** Pages carrying a `FOS Record ID` with no matching `projection` row (or no
+   * canonical opportunity), or no parseable `FOS Record ID` at all. */
   orphans: number;
   /** `FOS Record ID` values shared by 2+ pages in this run. */
   duplicateEntityIds: string[];
@@ -67,75 +64,42 @@ async function queryAllPages(
   return pages;
 }
 
-function extractPageId(page: NotionPageResult): string | null {
-  return typeof page.id === "string" ? page.id : null;
-}
-
-function extractLastEditedTime(page: NotionPageResult): Date | null {
-  if (typeof page.last_edited_time !== "string") return null;
-  const date = new Date(page.last_edited_time);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function extractFosRecordId(page: NotionPageResult): string | null {
   return readRichTextProperty(page.properties?.["FOS Record ID"]);
 }
 
 /**
- * Diffs a page's `working_copy_editable`/`canonical_read_only` properties
- * (per `enrollmentOpportunityReconcilableFields`, §8.1/§8.2) against the
- * canonical opportunity row.
- */
-function diffPage(
-  page: NotionPageResult,
-  opportunity: EnrollmentOpportunityRow,
-): {
-  readOnlyChanged: boolean;
-  editableChanges: Record<string, { from: string | null; to: string | null }>;
-} {
-  const editableChanges: Record<string, { from: string | null; to: string | null }> = {};
-  let readOnlyChanged = false;
-
-  for (const [field, def] of Object.entries(enrollmentOpportunityReconcilableFields)) {
-    const providerValue = def.readValue(page.properties?.[def.propertyName]);
-    const canonicalValue = def.canonicalValue(opportunity);
-    if (providerValue === canonicalValue) continue;
-
-    if (def.ownership === "canonical_read_only") {
-      readOnlyChanged = true;
-    } else {
-      editableChanges[field] = { from: canonicalValue, to: providerValue };
-    }
-  }
-
-  return { readOnlyChanged, editableChanges };
-}
-
-/**
- * Polls Notion for `EnrollmentOpportunity` pages, detects founder edits
- * against the `projection` table's `last_synced_at` cursor, and turns them
- * into canonical `workspace_command` rows (issue #30, slice 0.2c — the
- * INBOUND mirror of 0.2b's `projectOpportunity`).
+ * Polls Notion for `EnrollmentOpportunity` pages and performs the INBOUND
+ * INTEGRITY CHECK half of the adapter (issue #30, slice 0.2c — the mirror of
+ * 0.2b's outbound `projectOpportunity`). It detects when a projected page has
+ * drifted out of agreement with canonical and flags it; it never mutates
+ * Notion, and it does not capture founder edits into commands (that is 0.2d,
+ * which will define a founder-editable field, a provider-clock cursor, and the
+ * ADR-06 property-hash command-dedup key together).
  *
- * Classification (spec §8.3 conflict policy, §12.4 projection state machine):
- * - `last_edited_time <= last_synced_at` -> no founder change -> leave `in_sync`.
- * - a `working_copy_editable` property differs from canonical -> founder
- *   edit -> exactly ONE pending `workspace_command` capturing the diff,
- *   projection -> `provider_ahead`.
- * - a `canonical_read_only` property differs from canonical -> FOS-owned
- *   field was edited in Notion -> projection -> `conflict`, NO command
- *   (canonical wins; flagged for the founder, per spec §8.3 "do not
- *   overwrite either side").
+ * The drift signal is the §C1 hidden **`FOS Version`** property, which is exact
+ * and clock-skew-free (unlike `last_edited_time`, whose coarse granularity and
+ * our-own-write asymmetry made it unsafe for this direction). Per spec §8.3:
+ *
+ *   "Notion projected version equals canonical version?
+ *      yes -> validate and apply command / create artifact version
+ *      no  -> create sync conflict; do not overwrite either side"
+ *
+ * Classification:
+ * - page `FOS Version` === canonical `version` -> `inSync` (projection is
+ *   current; capturing any founder edit on it is 0.2d's job). Not written.
+ * - page `FOS Version` !== canonical `version`, OR an unreadable `FOS Version`
+ *   -> §8.3 sync conflict -> projection `sync_status = 'conflict'`, do not
+ *   overwrite either side.
  * - 2+ pages sharing one `FOS Record ID` -> duplicate (issue #29 item 1's
- *   dual-write window, or external) -> the tracked projection ->
- *   `conflict`, flagged, no command; NEITHER page's diff is processed
- *   (which one is "real" is a founder decision, not this slice's).
- * - a `FOS Record ID` with no matching `projection` row -> orphan -> flagged,
- *   no command, no crash.
+ *   dual-write window, or external) -> the tracked projection -> `conflict`,
+ *   flagged; NEITHER copy is version-checked (which one is "real" is a founder
+ *   decision, not this slice's).
+ * - a `FOS Record ID` with no matching `projection` row / no canonical row, or
+ *   no parseable `FOS Record ID` at all -> orphan -> flagged, no crash.
  *
- * Never mutates or deletes a Notion page (issue #30 constraint — detect and
- * flag only; 0.2d owns applying an approved command back to canonical
- * state, and neither slice writes to Notion from the inbound direction).
+ * Conflict is the only state this slice WRITES — a version-matched projection
+ * is left untouched, so reconcile can never clobber a state another flow set.
  */
 export async function reconcile(
   db: Db,
@@ -147,17 +111,15 @@ export async function reconcile(
 
   const result: ReconcileResult = {
     pagesProcessed: pages.length,
-    unchanged: 0,
-    commandsCreated: 0,
+    inSync: 0,
     conflicts: 0,
     orphans: 0,
     duplicateEntityIds: [],
   };
 
-  // First pass: group pages by FOS Record ID so a duplicate is detected
-  // (and excluded from per-page processing) BEFORE any diff/command work
-  // runs for either copy — order of pages within a single query response
-  // must not decide which copy "wins".
+  // First pass: group pages by FOS Record ID so a duplicate is detected (and
+  // excluded from per-page processing) BEFORE either copy is version-checked —
+  // order of pages within a query response must not decide which copy "wins".
   const pagesByEntityId = new Map<string, NotionPageResult[]>();
   const untagged: NotionPageResult[] = [];
   for (const page of pages) {
@@ -172,33 +134,34 @@ export async function reconcile(
   }
 
   // Pages with no parseable `FOS Record ID` at all can't be matched to any
-  // projection — flag as orphans, no crash (issue #29 item 4/#30 constraint).
+  // projection — flag as orphans, no crash (issue #29 item 4 / #30 constraint).
   result.orphans += untagged.length;
 
   for (const [entityId, group] of pagesByEntityId) {
     if (group.length > 1) {
       result.duplicateEntityIds.push(entityId);
-      await db
-        .update(projection)
-        .set({ syncStatus: "conflict", updatedAt: new Date() })
-        .where(
-          and(
-            eq(projection.workspaceId, workspaceId),
-            eq(projection.entityType, "EnrollmentOpportunity"),
-            eq(projection.entityId, entityId),
-            eq(projection.provider, "notion"),
-          ),
-        );
+      await flagConflict(db, workspaceId, entityId);
       result.conflicts += 1;
       continue;
     }
-
-    const page = group[0];
-    if (!page) continue; // unreachable (group.length === 1), keeps TS satisfied
-    await reconcilePage(db, workspaceId, entityId, page, result);
+    await reconcilePage(db, workspaceId, entityId, group[0]!, result);
   }
 
   return result;
+}
+
+async function flagConflict(db: Db, workspaceId: string, entityId: string): Promise<void> {
+  await db
+    .update(projection)
+    .set({ syncStatus: "conflict", updatedAt: new Date() })
+    .where(
+      and(
+        eq(projection.workspaceId, workspaceId),
+        eq(projection.entityType, "EnrollmentOpportunity"),
+        eq(projection.entityId, entityId),
+        eq(projection.provider, "notion"),
+      ),
+    );
 }
 
 async function reconcilePage(
@@ -208,15 +171,6 @@ async function reconcilePage(
   page: NotionPageResult,
   result: ReconcileResult,
 ): Promise<void> {
-  const pageId = extractPageId(page);
-  const lastEditedTime = extractLastEditedTime(page);
-  if (!pageId || !lastEditedTime) {
-    // Malformed page (missing id / unparseable last_edited_time) — flag,
-    // never crash the run over one bad record (issue #29 item 4).
-    result.orphans += 1;
-    return;
-  }
-
   const [proj] = await db
     .select()
     .from(projection)
@@ -238,11 +192,6 @@ async function reconcilePage(
     return;
   }
 
-  if (!proj.lastSyncedAt || lastEditedTime.getTime() <= proj.lastSyncedAt.getTime()) {
-    result.unchanged += 1;
-    return;
-  }
-
   const [opportunity] = await db
     .select()
     .from(enrollmentOpportunity)
@@ -255,9 +204,10 @@ async function reconcilePage(
     return;
   }
 
-  const { readOnlyChanged, editableChanges } = diffPage(page, opportunity);
-
-  if (readOnlyChanged) {
+  // §8.3 version check — the skew-free drift signal. An unreadable version is
+  // treated as "not equal": never assume in-sync when the stamp can't be read.
+  const providerVersion = readNumberProperty(page.properties?.["FOS Version"]);
+  if (providerVersion === null || providerVersion !== opportunity.version) {
     await db
       .update(projection)
       .set({ syncStatus: "conflict", updatedAt: new Date() })
@@ -266,39 +216,7 @@ async function reconcilePage(
     return;
   }
 
-  if (Object.keys(editableChanges).length === 0) {
-    // `last_edited_time` advanced but nothing this slice tracks actually
-    // differs (e.g. an edit to an unmapped property) — leave sync_status
-    // untouched; nothing actionable to flag or queue.
-    return;
-  }
-
-  const providerFosVersion = readNumberProperty(page.properties?.["FOS Version"]);
-  const [inserted] = await db
-    .insert(workspaceCommand)
-    .values({
-      workspaceId,
-      entityType: "EnrollmentOpportunity",
-      entityId,
-      provider: "notion",
-      providerPageId: pageId,
-      commandType: "propose_field_update",
-      payloadJson: { changes: editableChanges, providerFosVersion },
-      providerLastEditedAt: lastEditedTime,
-    })
-    .onConflictDoNothing({
-      target: [
-        workspaceCommand.provider,
-        workspaceCommand.providerPageId,
-        workspaceCommand.providerLastEditedAt,
-      ],
-    })
-    .returning();
-
-  if (inserted) result.commandsCreated += 1;
-
-  await db
-    .update(projection)
-    .set({ syncStatus: "provider_ahead", updatedAt: new Date() })
-    .where(eq(projection.id, proj.id));
+  // Versions agree — the projection reflects current canonical. Leave its
+  // sync_status untouched (no clobber); just count it.
+  result.inSync += 1;
 }

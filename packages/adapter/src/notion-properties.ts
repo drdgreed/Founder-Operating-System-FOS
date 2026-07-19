@@ -26,10 +26,3 @@ export function readNumberProperty(prop: unknown): number | null {
   const value = (prop as { number?: unknown }).number;
   return typeof value === "number" ? value : null;
 }
-
-export function readSelectProperty(prop: unknown): string | null {
-  if (!prop || typeof prop !== "object") return null;
-  const select = (prop as { select?: { name?: unknown } }).select;
-  if (select && typeof select.name === "string") return select.name;
-  return null;
-}

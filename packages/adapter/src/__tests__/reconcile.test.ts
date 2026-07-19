@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { NotionClient, type FetchLike } from "@fos/notion";
-import { projection, workspaceCommand } from "@fos/db/schema";
+import { projection } from "@fos/db/schema";
 import { reconcile } from "../reconcile.js";
 import { createTestDb, seedOpportunity } from "./test-db.js";
 
@@ -15,29 +15,27 @@ interface CannedPage {
   properties: Record<string, unknown>;
 }
 
+/**
+ * Builds a canned Notion page. `fosVersion: null` OMITS the `FOS Version`
+ * property entirely (the unreadable-stamp case); a number sets it.
+ */
 function buildPage(input: {
   pageId: string;
-  lastEditedTime: string;
   fosRecordId: string | null;
-  fosVersion?: number;
-  stage?: string;
-  nextActionSummary?: string | null;
+  fosVersion?: number | null;
 }): CannedPage {
+  const properties: Record<string, unknown> = {
+    "FOS Record ID":
+      input.fosRecordId === null
+        ? { rich_text: [] }
+        : { rich_text: [{ plain_text: input.fosRecordId }] },
+  };
+  const version = input.fosVersion === undefined ? 1 : input.fosVersion;
+  if (version !== null) properties["FOS Version"] = { number: version };
   return {
     id: input.pageId,
-    last_edited_time: input.lastEditedTime,
-    properties: {
-      "FOS Record ID":
-        input.fosRecordId === null
-          ? { rich_text: [] }
-          : { rich_text: [{ plain_text: input.fosRecordId }] },
-      "FOS Version": { number: input.fosVersion ?? 1 },
-      Stage: { select: { name: input.stage ?? "new_lead" } },
-      "Next Action Summary":
-        input.nextActionSummary == null
-          ? { rich_text: [] }
-          : { rich_text: [{ plain_text: input.nextActionSummary }] },
-    },
+    last_edited_time: "2026-07-18T13:00:00Z",
+    properties,
   };
 }
 
@@ -53,6 +51,9 @@ function makeMockNotion(pages: CannedPage[]) {
   return new NotionClient({ fetchImpl, requestsPerSecond: 100 });
 }
 
+type SyncStatus =
+  "pending" | "in_sync" | "fos_ahead" | "provider_ahead" | "conflict" | "failed" | "disabled";
+
 async function seedProjection(
   db: Awaited<ReturnType<typeof createTestDb>>["db"],
   input: {
@@ -61,9 +62,7 @@ async function seedProjection(
     entityId: string;
     providerPageId: string;
     fosVersion: number;
-    lastSyncedAt: Date | null;
-    syncStatus?:
-      "pending" | "in_sync" | "fos_ahead" | "provider_ahead" | "conflict" | "failed" | "disabled";
+    syncStatus?: SyncStatus;
   },
 ) {
   const [row] = await db
@@ -77,14 +76,22 @@ async function seedProjection(
       providerPageId: input.providerPageId,
       syncStatus: input.syncStatus ?? "in_sync",
       fosVersion: input.fosVersion,
-      lastSyncedAt: input.lastSyncedAt,
+      lastSyncedAt: new Date("2026-07-18T12:00:00Z"),
     })
     .returning();
   if (!row) throw new Error("seedProjection: projection insert returned no row");
   return row;
 }
 
-describe("reconcile (issue #30, slice 0.2c)", () => {
+async function readProjection(
+  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  entityId: string,
+) {
+  const [proj] = await db.select().from(projection).where(eq(projection.entityId, entityId));
+  return proj;
+}
+
+describe("reconcile (issue #30, slice 0.2c — inbound integrity check)", () => {
   const originalToken = process.env.FOS_NOTION_TOKEN;
 
   beforeEach(() => {
@@ -96,24 +103,23 @@ describe("reconcile (issue #30, slice 0.2c)", () => {
     else process.env.FOS_NOTION_TOKEN = originalToken;
   });
 
-  it("FOS0-RCN-05: unchanged page (last_edited_time <= last_synced_at) -> zero commands, projection stays in_sync", async () => {
+  it("FOS0-RCN-05: page FOS Version matches canonical -> inSync; a non-in_sync projection state is NOT clobbered", async () => {
     const { db, close } = await createTestDb();
     try {
-      const { opportunity } = await seedOpportunity(db, { stage: "new_lead" });
-      const syncedAt = new Date("2026-07-18T12:00:00Z");
+      const { opportunity } = await seedOpportunity(db, { version: 3 });
       await seedProjection(db, {
         workspaceId: opportunity.workspaceId,
         productId: opportunity.productId,
         entityId: opportunity.id,
         providerPageId: "notion-page-1",
         fosVersion: opportunity.version,
-        lastSyncedAt: syncedAt,
+        // A state a future 0.2d capture flow might set — reconcile must leave it.
+        syncStatus: "provider_ahead",
       });
       const page = buildPage({
         pageId: "notion-page-1",
-        lastEditedTime: syncedAt.toISOString(),
         fosRecordId: opportunity.id,
-        stage: "new_lead",
+        fosVersion: 3,
       });
       const client = makeMockNotion([page]);
 
@@ -122,95 +128,32 @@ describe("reconcile (issue #30, slice 0.2c)", () => {
         dataSourceId: "data-source-1",
       });
 
-      expect(result.unchanged).toBe(1);
-      expect(result.commandsCreated).toBe(0);
-      expect(await db.select().from(workspaceCommand)).toHaveLength(0);
-
-      const [proj] = await db
-        .select()
-        .from(projection)
-        .where(eq(projection.entityId, opportunity.id));
-      expect(proj!.syncStatus).toBe("in_sync");
+      expect(result.inSync).toBe(1);
+      expect(result.conflicts).toBe(0);
+      // Version matched -> reconcile wrote nothing, so the seeded state stands.
+      expect((await readProjection(db, opportunity.id))!.syncStatus).toBe("provider_ahead");
     } finally {
       await close();
     }
   });
 
-  it("FOS0-RCN-06: founder edited a founder-editable field -> exactly ONE pending workspace_command with the correct diff; projection -> provider_ahead", async () => {
+  it("FOS0-RCN-06: page FOS Version differs from canonical (§8.3 stale projection) -> conflict, no overwrite", async () => {
     const { db, close } = await createTestDb();
     try {
-      const { opportunity } = await seedOpportunity(db, {
-        stage: "new_lead",
-        nextActionSummary: null,
-      });
-      const syncedAt = new Date("2026-07-18T12:00:00Z");
+      // Canonical has advanced to v2 since projection; the page still stamps v1.
+      const { opportunity } = await seedOpportunity(db, { version: 2 });
       await seedProjection(db, {
         workspaceId: opportunity.workspaceId,
         productId: opportunity.productId,
         entityId: opportunity.id,
         providerPageId: "notion-page-1",
-        fosVersion: opportunity.version,
-        lastSyncedAt: syncedAt,
+        fosVersion: 1,
+        syncStatus: "in_sync",
       });
       const page = buildPage({
         pageId: "notion-page-1",
-        lastEditedTime: "2026-07-18T13:00:00Z",
         fosRecordId: opportunity.id,
-        stage: "new_lead",
-        nextActionSummary: "Call founder Tuesday",
-      });
-      const client = makeMockNotion([page]);
-
-      const result = await reconcile(db, client, {
-        workspaceId: opportunity.workspaceId,
-        dataSourceId: "data-source-1",
-      });
-
-      expect(result.commandsCreated).toBe(1);
-
-      const commands = await db.select().from(workspaceCommand);
-      expect(commands).toHaveLength(1);
-      expect(commands[0]).toMatchObject({
-        entityType: "EnrollmentOpportunity",
-        entityId: opportunity.id,
-        provider: "notion",
-        providerPageId: "notion-page-1",
-        commandType: "propose_field_update",
-        status: "pending",
-        source: "notion_reconcile",
-      });
-      expect(commands[0]!.payloadJson).toMatchObject({
-        changes: { nextActionSummary: { from: null, to: "Call founder Tuesday" } },
-      });
-
-      const [proj] = await db
-        .select()
-        .from(projection)
-        .where(eq(projection.entityId, opportunity.id));
-      expect(proj!.syncStatus).toBe("provider_ahead");
-    } finally {
-      await close();
-    }
-  });
-
-  it("FOS0-RCN-07: founder edited a canonical_read_only field -> projection -> conflict, NO command emitted", async () => {
-    const { db, close } = await createTestDb();
-    try {
-      const { opportunity } = await seedOpportunity(db, { stage: "new_lead" });
-      const syncedAt = new Date("2026-07-18T12:00:00Z");
-      await seedProjection(db, {
-        workspaceId: opportunity.workspaceId,
-        productId: opportunity.productId,
-        entityId: opportunity.id,
-        providerPageId: "notion-page-1",
-        fosVersion: opportunity.version,
-        lastSyncedAt: syncedAt,
-      });
-      const page = buildPage({
-        pageId: "notion-page-1",
-        lastEditedTime: "2026-07-18T13:00:00Z",
-        fosRecordId: opportunity.id,
-        stage: "contacted", // canonical_read_only field changed in Notion
+        fosVersion: 1,
       });
       const client = makeMockNotion([page]);
 
@@ -220,81 +163,100 @@ describe("reconcile (issue #30, slice 0.2c)", () => {
       });
 
       expect(result.conflicts).toBe(1);
-      expect(result.commandsCreated).toBe(0);
-      expect(await db.select().from(workspaceCommand)).toHaveLength(0);
-
-      const [proj] = await db
-        .select()
-        .from(projection)
-        .where(eq(projection.entityId, opportunity.id));
-      expect(proj!.syncStatus).toBe("conflict");
+      expect(result.inSync).toBe(0);
+      expect((await readProjection(db, opportunity.id))!.syncStatus).toBe("conflict");
     } finally {
       await close();
     }
   });
 
-  it("FOS0-RCN-08: idempotency — reconcile run twice with no new edit creates ZERO new commands the second time", async () => {
+  it("FOS0-RCN-07: an unreadable page FOS Version is treated as a conflict, never assumed in-sync", async () => {
     const { db, close } = await createTestDb();
     try {
-      const { opportunity } = await seedOpportunity(db, {
-        stage: "new_lead",
-        nextActionSummary: null,
-      });
-      const syncedAt = new Date("2026-07-18T12:00:00Z");
+      const { opportunity } = await seedOpportunity(db, { version: 1 });
       await seedProjection(db, {
         workspaceId: opportunity.workspaceId,
         productId: opportunity.productId,
         entityId: opportunity.id,
         providerPageId: "notion-page-1",
-        fosVersion: opportunity.version,
-        lastSyncedAt: syncedAt,
+        fosVersion: 1,
+        syncStatus: "in_sync",
+      });
+      // fosVersion: null -> the FOS Version property is omitted from the page.
+      const page = buildPage({
+        pageId: "notion-page-1",
+        fosRecordId: opportunity.id,
+        fosVersion: null,
+      });
+      const client = makeMockNotion([page]);
+
+      const result = await reconcile(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      expect(result.conflicts).toBe(1);
+      expect((await readProjection(db, opportunity.id))!.syncStatus).toBe("conflict");
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-RCN-08: reconcile is stable across repeated runs (idempotent detection, no side effects)", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1 });
+      await seedProjection(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: opportunity.id,
+        providerPageId: "notion-page-1",
+        fosVersion: 1,
+        syncStatus: "in_sync",
       });
       const page = buildPage({
         pageId: "notion-page-1",
-        lastEditedTime: "2026-07-18T13:00:00Z",
         fosRecordId: opportunity.id,
-        stage: "new_lead",
-        nextActionSummary: "Call founder Tuesday",
+        fosVersion: 1,
       });
       const client = makeMockNotion([page]);
       const args = { workspaceId: opportunity.workspaceId, dataSourceId: "data-source-1" };
 
       const first = await reconcile(db, client, args);
-      expect(first.commandsCreated).toBe(1);
-
       const second = await reconcile(db, client, args);
-      expect(second.commandsCreated).toBe(0);
 
-      expect(await db.select().from(workspaceCommand)).toHaveLength(1);
+      expect(first.inSync).toBe(1);
+      expect(second.inSync).toBe(1);
+      expect(second.conflicts).toBe(0);
+      // Exactly one projection row throughout — no accidental inserts/dups.
+      expect(await db.select().from(projection)).toHaveLength(1);
     } finally {
       await close();
     }
   });
 
-  it("FOS0-RCN-09: duplicate FOS Record ID across two pages -> detected/flagged, projection -> conflict", async () => {
+  it("FOS0-RCN-09: duplicate FOS Record ID across two pages -> conflict, neither copy version-checked", async () => {
     const { db, close } = await createTestDb();
     try {
-      const { opportunity } = await seedOpportunity(db, { stage: "new_lead" });
-      const syncedAt = new Date("2026-07-18T12:00:00Z");
+      const { opportunity } = await seedOpportunity(db, { version: 1 });
       await seedProjection(db, {
         workspaceId: opportunity.workspaceId,
         productId: opportunity.productId,
         entityId: opportunity.id,
         providerPageId: "notion-page-1",
-        fosVersion: opportunity.version,
-        lastSyncedAt: syncedAt,
+        fosVersion: 1,
+        syncStatus: "in_sync",
       });
+      // Two distinct pages sharing one FOS Record ID (0.2b dual-write window).
       const pageA = buildPage({
         pageId: "notion-page-1",
-        lastEditedTime: "2026-07-18T13:00:00Z",
         fosRecordId: opportunity.id,
-        stage: "new_lead",
+        fosVersion: 1,
       });
       const pageB = buildPage({
-        pageId: "notion-page-2", // a second, distinct Notion page
-        lastEditedTime: "2026-07-18T13:05:00Z",
-        fosRecordId: opportunity.id, // ...sharing the same FOS Record ID
-        stage: "new_lead",
+        pageId: "notion-page-2",
+        fosRecordId: opportunity.id,
+        fosVersion: 1,
       });
       const client = makeMockNotion([pageA, pageB]);
 
@@ -305,29 +267,22 @@ describe("reconcile (issue #30, slice 0.2c)", () => {
 
       expect(result.duplicateEntityIds).toEqual([opportunity.id]);
       expect(result.conflicts).toBe(1);
-      expect(result.commandsCreated).toBe(0);
-      expect(await db.select().from(workspaceCommand)).toHaveLength(0);
-
-      const [proj] = await db
-        .select()
-        .from(projection)
-        .where(eq(projection.entityId, opportunity.id));
-      expect(proj!.syncStatus).toBe("conflict");
+      expect(result.inSync).toBe(0);
+      expect((await readProjection(db, opportunity.id))!.syncStatus).toBe("conflict");
     } finally {
       await close();
     }
   });
 
-  it("FOS0-RCN-10: page with an unknown FOS Record ID (no projection) -> orphan flagged, no command, no crash", async () => {
+  it("FOS0-RCN-10: a page whose FOS Record ID has no projection row -> orphan, no crash", async () => {
     const { db, close } = await createTestDb();
     try {
-      const { opportunity } = await seedOpportunity(db, { stage: "new_lead" });
+      const { opportunity } = await seedOpportunity(db, { version: 1 });
       // No projection row is seeded for this opportunity at all.
       const page = buildPage({
         pageId: "notion-page-orphan",
-        lastEditedTime: "2026-07-18T13:00:00Z",
         fosRecordId: opportunity.id,
-        stage: "new_lead",
+        fosVersion: 1,
       });
       const client = makeMockNotion([page]);
 
@@ -337,22 +292,50 @@ describe("reconcile (issue #30, slice 0.2c)", () => {
       });
 
       expect(result.orphans).toBe(1);
-      expect(result.commandsCreated).toBe(0);
-      expect(await db.select().from(workspaceCommand)).toHaveLength(0);
+      expect(result.conflicts).toBe(0);
       expect(await db.select().from(projection)).toHaveLength(0);
     } finally {
       await close();
     }
   });
 
-  it("FOS0-RCN-11: a page with no parseable FOS Record ID is flagged as an orphan, not crashed on", async () => {
+  it("FOS0-RCN-11: a page with no parseable FOS Record ID -> orphan, not crashed on", async () => {
     const { db, close } = await createTestDb();
     try {
-      const { opportunity } = await seedOpportunity(db, { stage: "new_lead" });
+      const { opportunity } = await seedOpportunity(db, { version: 1 });
+      const page = buildPage({ pageId: "notion-page-blank", fosRecordId: null });
+      const client = makeMockNotion([page]);
+
+      const result = await reconcile(db, client, {
+        workspaceId: opportunity.workspaceId,
+        dataSourceId: "data-source-1",
+      });
+
+      expect(result.orphans).toBe(1);
+      expect(result.conflicts).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS0-RCN-12: a projection pointing at a deleted canonical opportunity -> orphan, no crash", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const { opportunity } = await seedOpportunity(db, { version: 1 });
+      // A projection whose FOS Record ID has no matching enrollment_opportunity.
+      const danglingEntityId = "00000000-0000-0000-0000-0000000000ff";
+      await seedProjection(db, {
+        workspaceId: opportunity.workspaceId,
+        productId: opportunity.productId,
+        entityId: danglingEntityId,
+        providerPageId: "notion-page-dangling",
+        fosVersion: 1,
+        syncStatus: "in_sync",
+      });
       const page = buildPage({
-        pageId: "notion-page-blank",
-        lastEditedTime: "2026-07-18T13:00:00Z",
-        fosRecordId: null,
+        pageId: "notion-page-dangling",
+        fosRecordId: danglingEntityId,
+        fosVersion: 1,
       });
       const client = makeMockNotion([page]);
 
@@ -362,7 +345,7 @@ describe("reconcile (issue #30, slice 0.2c)", () => {
       });
 
       expect(result.orphans).toBe(1);
-      expect(result.commandsCreated).toBe(0);
+      expect(result.conflicts).toBe(0);
     } finally {
       await close();
     }

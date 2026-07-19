@@ -19,9 +19,10 @@
  * Slice 0.2b ("Notion projection layer") adds:
  *   projection — the canonical<->provider page mapping record (§11.4-derived).
  *
- * Slice 0.2c ("Notion reconciliation") adds:
- *   workspace_command — the founder-intent queue (§11.5-derived) that
- *   inbound reconciliation writes to and 0.2d will later consume.
+ * Slice 0.2c ("Notion reconciliation") adds no new tables: it is the inbound
+ *   INTEGRITY CHECK (detect §8.3 version-mismatch conflicts + orphan/duplicate
+ *   pages) over the existing `projection` table. Command capture (the
+ *   §11.5 workspace_command queue) lands with 0.2d.
  */
 export * from "./fos_workspace.js";
 export * from "./product.js";
@@ -34,4 +35,3 @@ export * from "./artifact_version.js";
 export * from "./approval.js";
 export * from "./workspace_integration.js";
 export * from "./projection.js";
-export * from "./workspace_command.js";
