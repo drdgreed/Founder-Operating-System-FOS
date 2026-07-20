@@ -575,5 +575,10 @@ describe("fos.enrollment_brief (issue #53) — the first real business agent", (
 
     // No canonical assessment written against the cross-tenant opportunity.
     expect(await ctx.db.select().from(enrollmentAssessment)).toHaveLength(0);
+
+    // No orphaned artifact either: persistDomain's throw must roll back the
+    // createArtifact write that happened right before it (issue #63).
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+    expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
   });
 });

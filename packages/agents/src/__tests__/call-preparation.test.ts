@@ -324,6 +324,11 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
       .from(agentRun)
       .where(eq(agentRun.workspaceId, mine.workspace.id));
     expect(runRow?.status).toBe("error");
+
+    // No orphaned artifact: persistDomain's throw must roll back the
+    // createArtifact write that happened right before it (issue #63).
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+    expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
   });
 
   it("FOS1-CALLPREP-07: a cross-workspace interaction id is rejected even though the opportunity is mine", async () => {
@@ -355,6 +360,11 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
     await expect(
       runAgent({ db: ctx.db, modelClient }, fosCallPreparationAgentDefinition, input, runContext),
     ).rejects.toThrow(/interaction .* is not in workspace/);
+
+    // No orphaned artifact: persistDomain's throw must roll back the
+    // createArtifact write that happened right before it (issue #63).
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+    expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
   });
 
   it("FOS1-CALLPREP-08: an interaction that belongs to a DIFFERENT opportunity in my own workspace is rejected", async () => {
@@ -389,6 +399,11 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
     await expect(
       runAgent({ db: ctx.db, modelClient }, fosCallPreparationAgentDefinition, input, runContext),
     ).rejects.toThrow(/does not belong to opportunity/);
+
+    // No orphaned artifact: persistDomain's throw must roll back the
+    // createArtifact write that happened right before it (issue #63).
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+    expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
   });
 
   it("FOS1-CALLPREP-09: prompt injection — untrusted evidence content changes no gate/mode/approval decision vs. a benign control", async () => {
