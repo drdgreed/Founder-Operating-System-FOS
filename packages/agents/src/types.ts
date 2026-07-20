@@ -66,6 +66,16 @@ export interface ProjectionHookContext {
 }
 
 export interface PersistDomainHookContext {
+  /**
+   * IMPORTANT (issue #63): `deps.db` here is a TRANSACTION handle — the hook
+   * runs inside the stage-9 transaction, so all its DB writes commit/roll back
+   * atomically with the artifact. A throw rolls the whole stage back. Corollary:
+   * this hook is for CANONICAL DB writes ONLY. Do NOT perform non-idempotent
+   * external side effects here (email/HTTP/Notion) — the tx cannot roll those
+   * back, and they re-execute on retry. External effects belong in the isolated
+   * stage-11 `projection` hook. (Other `deps` clients, e.g. `notionClient`,
+   * remain reachable but must not be used for side effects in this hook.)
+   */
   deps: RunAgentDeps;
   runContext: RunAgentContext;
   agentRunId: string;
@@ -101,7 +111,9 @@ export interface AgentDefinition<TInput, TOutput> {
    * canonical state, not a best-effort external side effect, so it must fail
    * closed like any other stage-9 write. Optional: omitted by definitions
    * with no domain record to persist (e.g. the `fos.smoke` stub), which keep
-   * working unchanged.
+   * working unchanged. NOTE (issue #63): runs INSIDE the stage-9 transaction —
+   * `ctx.deps.db` is a tx handle; canonical DB writes only, no external
+   * side effects (see PersistDomainHookContext).
    */
   persistDomain?: (
     ctx: PersistDomainHookContext,

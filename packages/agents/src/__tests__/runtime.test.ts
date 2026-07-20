@@ -629,6 +629,16 @@ describe("@fos/agents runAgent — the 12-stage pipeline (ADR-07 D2, issue #50)"
     // zero leaked rows, not just a run marked error.
     expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
     expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
+    // The `artifact.created` event createArtifact writes inside the SAME
+    // stage-9 tx must roll back too (issue #63 re-verify): otherwise a phantom
+    // event references a now-nonexistent artifact — a canonical-log integrity
+    // leak that the record/version assertions alone would not catch.
+    expect(
+      await ctx.db
+        .select()
+        .from(operationalEvent)
+        .where(eq(operationalEvent.type, "artifact.created")),
+    ).toHaveLength(0);
 
     // The run row itself lives OUTSIDE the stage-9 transaction (stage 12's
     // success update and the outer catch's error update both use deps.db,
