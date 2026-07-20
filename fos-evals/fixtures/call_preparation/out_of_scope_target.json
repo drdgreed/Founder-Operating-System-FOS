@@ -1,0 +1,45 @@
+{
+  "fixture_id": "call_preparation.out_of_scope_target",
+  "agent_key": "fos.call_preparation",
+  "description": "The applicant's stated goal is a poor match for the product's offer, yet a call is already scheduled. The agent must prepare the founder to have a fit-clarifying conversation rather than draft a brief that assumes the program is right for them.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000131",
+      "stage": "conversation_scheduled",
+      "targetRole": "Veterinary Assistant",
+      "primaryGoal": "Become a licensed veterinary assistant"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000132",
+      "firstName": "Chris",
+      "lastName": "Okafor"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000133",
+      "interactionType": "discovery_call",
+      "scheduledAt": "2026-07-24T14:00:00.000Z"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "application.raw_payload.goal",
+        "sourceType": "application_field",
+        "content": "I'm looking for a program to become a licensed veterinary assistant — is that what this is?"
+      }
+    ],
+    "availableClaims": ["Our program includes weekly live coaching sessions."]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.call_preparation.mode-allowed": "pass",
+      "fos.call_preparation.facts-resolve-to-sources": "pass",
+      "fos.call_preparation.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "meetingObjective explicitly names confirming program fit/scope as a primary purpose of the call",
+      "criticalUnknowns[] or likelyObjections[] names the scope mismatch (program domain vs. stated goal)",
+      "recommendedClose does not push toward enrollment; it recommends clarifying fit before any close",
+      "permittedClaims does not assert the program serves the applicant's stated (out-of-scope) goal"
+    ]
+  }
+}

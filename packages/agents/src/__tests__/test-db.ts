@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
@@ -13,6 +14,7 @@ import {
   applicationSubmission,
   type FeatureFlagMode,
 } from "@fos/db/schema";
+import { createInteraction } from "@fos/db/services";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // packages/agents/src/__tests__ -> packages/db/migrations
@@ -133,4 +135,76 @@ export async function seedEnrollmentBriefFixture(
     throw new Error("seedEnrollmentBriefFixture: application_submission insert returned no row");
 
   return { workspace, product: prod, person: personRow, opportunity, application };
+}
+
+/**
+ * Seeds an EnrollmentOpportunity + Person chain plus a scheduled Interaction
+ * (P1.3a substrate) for the `fos.call_preparation` agent tests (issue #60),
+ * which need real canonical rows to assert workspace ownership against at
+ * the persistDomain seam (no domain record is written by this agent).
+ *
+ * Accepts an optional already-seeded `workspace` row so a test can seed a
+ * SECOND opportunity/interaction chain inside the SAME workspace (e.g. to
+ * exercise the "interaction belongs to a different opportunity" check,
+ * distinct from the cross-workspace check).
+ */
+export async function seedCallPreparationFixture(
+  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
+) {
+  const workspace = existingWorkspace ?? (await seedWorkspace(db));
+
+  const [prod] = await db
+    .insert(product)
+    .values({
+      workspaceId: workspace.id,
+      // Suffix with a fresh id: `existingWorkspace` lets a test seed a
+      // SECOND opportunity chain in the same workspace, and
+      // (workspace_id, product_key) is unique.
+      productKey: `career-foundry-${randomUUID().slice(0, 8)}`,
+      name: "Career Foundry",
+      productType: "product",
+      parentProductId: null,
+    })
+    .returning();
+  if (!prod) throw new Error("seedCallPreparationFixture: product insert returned no row");
+
+  const [personRow] = await db
+    .insert(person)
+    .values({
+      workspaceId: workspace.id,
+      firstName: "Ada",
+      lastName: "Lovelace",
+      currentRole: "Data Analyst",
+      currentCompany: "Acme Corp",
+      location: "Remote",
+      source: "website_application",
+      lifecycleType: "applicant",
+    })
+    .returning();
+  if (!personRow) throw new Error("seedCallPreparationFixture: person insert returned no row");
+
+  const [opportunity] = await db
+    .insert(enrollmentOpportunity)
+    .values({
+      workspaceId: workspace.id,
+      productId: prod.id,
+      personId: personRow.id,
+      stage: "conversation_scheduled",
+      currency: "USD",
+      version: 1,
+    })
+    .returning();
+  if (!opportunity)
+    throw new Error("seedCallPreparationFixture: enrollment_opportunity insert returned no row");
+
+  const interactionRow = await createInteraction(db, {
+    workspaceId: workspace.id,
+    opportunityId: opportunity.id,
+    interactionType: "discovery_call",
+    status: "scheduled",
+    scheduledAt: new Date("2026-07-25T15:00:00.000Z"),
+  });
+
+  return { workspace, product: prod, person: personRow, opportunity, interaction: interactionRow };
 }

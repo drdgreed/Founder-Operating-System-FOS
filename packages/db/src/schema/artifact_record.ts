@@ -48,6 +48,13 @@ export const artifactTypeEnum = pgEnum("artifact_type", [
   "beta_launch_source_brief",
   "webinar_package",
   "referral_kit",
+  // Issue #60 (P1.3b): spec §7.1 names `call_preparation_brief`; it was one
+  // of the two P1 types (alongside `enrollment_brief`, tracked separately in
+  // #55) that never landed in migration 0002's canonical set. Adding ONLY
+  // this member here — do not also add `enrollment_brief`, which stays out
+  // of scope for this slice (enrollment-brief.ts keeps using its `call_brief`
+  // stopgap until #55 is picked up).
+  "call_preparation_brief",
 ]);
 
 // PATCH-SET-01 §S2 domain value set.

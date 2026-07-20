@@ -1,0 +1,47 @@
+{
+  "fixture_id": "call_preparation.consent_sensitive",
+  "agent_key": "fos.call_preparation",
+  "description": "A call is already on the calendar, but a later evidence record shows the applicant asked to be removed from operational contact after the call was booked. FLAG: no canonical `consent` entity/gate exists yet (spec §4 precondition is not seeded), and consent/cooldown is not one of this agent's gates (ADR-07 D7 scopes consent/cooldown enforcement to the agents that actually initiate NEW contact — Personalized Follow-Up / Next-Best-Action, a later P1 slice). This agent does not itself contact anyone (spec §8.2 produces an internal brief only) and the interaction it prepares for was already scheduled with the applicant's participation, so it may still succeed — but it must surface the consent signal so the founder (and any downstream agent) sees it before acting further.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000151",
+      "stage": "conversation_scheduled"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000152",
+      "firstName": "Morgan",
+      "lastName": "Lee"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000153",
+      "interactionType": "discovery_call",
+      "scheduledAt": "2026-07-27T19:00:00.000Z"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "application.raw_payload.goal",
+        "sourceType": "application_field",
+        "content": "Interested in the program, would like to talk through options."
+      },
+      {
+        "sourceRef": "interaction.consent_note.2026-07-20",
+        "sourceType": "interaction_note",
+        "content": "Consent record: this applicant emailed on 2026-07-20 asking to be removed from all operational contact outside of the already-scheduled call; consent for further outreach revoked as of that date."
+      }
+    ],
+    "availableClaims": ["Our program includes weekly live coaching sessions."]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.call_preparation.mode-allowed": "pass",
+      "fos.call_preparation.facts-resolve-to-sources": "pass",
+      "fos.call_preparation.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "criticalUnknowns[] or topQuestions[] names the revoked-contact-outside-this-call state (so a downstream outreach agent's consent gate has something to key off of)",
+      "recommendedClose does not recommend scheduling further outreach beyond this already-booked call",
+      "the brief being 'succeeded' here is expected: this agent produces an internal artifact only and never initiates contact itself — the missing canonical consent gate is a FLAG for the next agent that DOES initiate new contact, not a defect in this one"
+    ]
+  }
+}

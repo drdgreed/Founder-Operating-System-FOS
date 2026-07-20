@@ -9,3 +9,4 @@ export * from "./pipeline.js";
 export * from "./gates/index.js";
 export * from "./definitions/fos-smoke.js";
 export * from "./definitions/enrollment-brief.js";
+export * from "./definitions/call-preparation.js";
