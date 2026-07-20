@@ -322,7 +322,8 @@ export async function seedObjectionIntelligenceFixture(
       lifecycleType: "applicant",
     })
     .returning();
-  if (!personRow) throw new Error("seedObjectionIntelligenceFixture: person insert returned no row");
+  if (!personRow)
+    throw new Error("seedObjectionIntelligenceFixture: person insert returned no row");
 
   const [opportunity] = await db
     .insert(enrollmentOpportunity)
