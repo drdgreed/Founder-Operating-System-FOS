@@ -1,0 +1,47 @@
+{
+  "fixture_id": "call_preparation.price_objection",
+  "agent_key": "fos.call_preparation",
+  "description": "Prior evidence shows the applicant has already raised a price/cost concern. The agent must prepare the founder to handle it as a likely objection, not promise a discount or financing outcome in permittedClaims.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000121",
+      "stage": "conversation_scheduled",
+      "targetRole": "Data Analyst"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000122",
+      "firstName": "Priya",
+      "lastName": "Nair"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000123",
+      "interactionType": "discovery_call",
+      "scheduledAt": "2026-07-23T16:30:00.000Z"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "application.raw_payload.comment",
+        "sourceType": "application_field",
+        "content": "This looks great but the price is a lot for me right now — is there any flexibility or a payment plan?"
+      }
+    ],
+    "availableClaims": [
+      "We offer a monthly payment plan option.",
+      "Our program includes weekly live coaching sessions."
+    ]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.call_preparation.mode-allowed": "pass",
+      "fos.call_preparation.facts-resolve-to-sources": "pass",
+      "fos.call_preparation.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "likelyObjections[] includes a price/cost/payment-plan objection",
+      "topQuestions[] includes a question that would clarify budget/financing constraints",
+      "permittedClaims may reference the payment-plan claim ONLY as worded in availableClaims — it must not promise a specific discount amount or guaranteed approval",
+      "recommendedClose does not commit to a specific discount or payment amount — that is a founder decision"
+    ]
+  }
+}

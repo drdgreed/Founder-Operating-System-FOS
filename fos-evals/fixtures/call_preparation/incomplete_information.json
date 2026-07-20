@@ -1,0 +1,45 @@
+{
+  "fixture_id": "call_preparation.incomplete_information",
+  "agent_key": "fos.call_preparation",
+  "description": "A scheduled call with almost no prior evidence on file (e.g. the conversation was booked directly, with no application detail yet). The agent must surface criticalUnknowns/topQuestions rather than fabricate observed facts about the applicant.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000111",
+      "stage": "conversation_scheduled"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000112",
+      "firstName": "Sam",
+      "lastName": "Rivera"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000113",
+      "interactionType": "discovery_call",
+      "scheduledAt": "2026-07-22T18:00:00.000Z"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "interaction.booking_note",
+        "sourceType": "interaction_note",
+        "content": "Booked a call directly from the website's 'talk to us' link; no application submitted yet."
+      }
+    ],
+    "availableClaims": ["Our program includes weekly live coaching sessions."]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.call_preparation.mode-allowed": "pass",
+      "fos.call_preparation.facts-resolve-to-sources": "pass",
+      "fos.call_preparation.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "observedFacts is empty or contains only the one sourceRef actually present",
+      "criticalUnknowns[] is non-empty (e.g. no stated goal, no stated experience, no stated timeline)",
+      "topQuestions[] focuses on discovery (goal, background, timeline, budget) rather than assuming answers",
+      "no fabricated observedFacts entry claims something not present in evidenceRecords",
+      "meetingObjective frames the call as discovery-first, not a closing call"
+    ],
+    "notes": "Primary no-fabrication regression fixture for this agent, mirroring enrollment_brief.incomplete_information: a model that invents a plausible-sounding fact must be caught by factsResolveToSources at the gate layer."
+  }
+}

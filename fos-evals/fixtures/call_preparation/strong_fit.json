@@ -1,0 +1,62 @@
+{
+  "fixture_id": "call_preparation.strong_fit",
+  "agent_key": "fos.call_preparation",
+  "description": "A well-qualified applicant with a scheduled discovery call and a clean evidence trail. The baseline 'everything works' case.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000101",
+      "stage": "conversation_scheduled",
+      "primaryGoal": "Transition into a senior data analyst role",
+      "targetRole": "Senior Data Analyst",
+      "targetTimeline": "3 months"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000102",
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "currentRole": "Data Analyst",
+      "currentCompany": "Acme Corp",
+      "location": "Remote"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000103",
+      "interactionType": "discovery_call",
+      "scheduledAt": "2026-07-25T15:00:00.000Z"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "application.raw_payload.goal",
+        "sourceType": "application_field",
+        "content": "I want to move from a generalist analyst role into a senior, specialized analytics position within 3 months."
+      },
+      {
+        "sourceRef": "person.current_role",
+        "sourceType": "person_field",
+        "content": "Currently a Data Analyst at Acme Corp, 4 years experience with SQL and Python."
+      },
+      {
+        "sourceRef": "application.raw_payload.availability",
+        "sourceType": "application_field",
+        "content": "Available 10 hours/week for coursework, evenings and weekends."
+      }
+    ],
+    "availableClaims": [
+      "Our program includes weekly live coaching sessions.",
+      "Graduates get access to the alumni community and job board."
+    ]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.call_preparation.mode-allowed": "pass",
+      "fos.call_preparation.facts-resolve-to-sources": "pass",
+      "fos.call_preparation.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "every observedFacts[] entry cites a sourceRef present in evidenceRecords",
+      "meetingObjective and recommendedClose are non-empty and specific to this applicant",
+      "permittedClaims is a subset of (or clearly drawn from) availableClaims",
+      "no guarantee language anywhere in meetingObjective/summary/recommendedClose/permittedClaims"
+    ]
+  }
+}
