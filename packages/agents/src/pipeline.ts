@@ -444,18 +444,31 @@ export async function runAgent<TInput, TOutput>(
     // Every other terminal (succeeded/evaluation_failed/policy_blocked)
     // emits an audit event; the error path previously did not, leaving an
     // errored run invisible to event/projection consumers (issue #52 item 1).
-    await writeEvent(deps.db, {
-      workspaceId: runContext.workspaceId,
-      productId: runContext.productId ?? null,
-      entityType: "AgentRun",
-      entityId: runId,
-      source: "agent-runtime",
-      correlationId,
-      causationId,
-      actor: runContext.actor,
-      type: "agent_run.error",
-      payload: { agentKey: definition.key, agentVersion: definition.version, error: message },
-    });
+    // ISOLATED: the true failure cause is already durably persisted above
+    // (agent_run.status + deterministicEvalJson.error). A failure to emit the
+    // audit event must NOT mask the original `err` — otherwise the caller
+    // would reject with the writeEvent error instead of the real cause. Log
+    // and continue so `throw err` below always wins the rejection.
+    try {
+      await writeEvent(deps.db, {
+        workspaceId: runContext.workspaceId,
+        productId: runContext.productId ?? null,
+        entityType: "AgentRun",
+        entityId: runId,
+        source: "agent-runtime",
+        correlationId,
+        causationId,
+        actor: runContext.actor,
+        type: "agent_run.error",
+        payload: { agentKey: definition.key, agentVersion: definition.version, error: message },
+      });
+    } catch (eventErr) {
+      console.error(
+        `[agent-runtime] failed to emit agent_run.error event for run ${runId} ` +
+          `(original cause preserved in agent_run.deterministicEvalJson):`,
+        eventErr instanceof Error ? eventErr.message : String(eventErr),
+      );
+    }
 
     throw err;
   }
