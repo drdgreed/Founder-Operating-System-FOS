@@ -293,35 +293,41 @@ export async function runAgent<TInput, TOutput>(
       ? await definition.evalPolicy.secondaryEval(input, output)
       : null;
 
-    // ---- Stage 9: canonical persistence (REUSE createArtifact, 0.1b) ---
-    const artifactResult = await createArtifact(deps.db, {
-      workspaceId: runContext.workspaceId,
-      productId: runContext.productId ?? null,
-      artifactType: definition.artifact.artifactType,
-      domain: definition.artifact.domain,
-      title: definition.artifact.buildTitle(input, output),
-      bodyMarkdown: definition.artifact.buildBodyMarkdown(input, output),
-      claimsManifestJson: definition.artifact.buildClaimsManifest?.(input, output) ?? {},
-      actor: runContext.actor,
-      source: "agent-runtime",
-      correlationId,
-      causationId,
-    });
+    // ---- Stage 9: canonical persistence (REUSE createArtifact, 0.1b), plus
+    // Stage 9b: domain-specific canonical persistence (issue #53) ----------
+    // Both run inside ONE transaction (issue #63): createArtifact opens its
+    // own nested `db.transaction` (a Postgres SAVEPOINT when passed `tx`), so
+    // a persistDomain throw rolls back the artifact + version + the
+    // `artifact.created` event together with it. Unlike stage 11's isolated
+    // projection, a persistDomain failure is NOT caught here — it propagates
+    // to the outer catch below and fails the run closed, since this is the
+    // agent's own canonical record, not a best-effort external side effect.
+    const artifactResult = await deps.db.transaction(async (tx) => {
+      const result = await createArtifact(tx, {
+        workspaceId: runContext.workspaceId,
+        productId: runContext.productId ?? null,
+        artifactType: definition.artifact.artifactType,
+        domain: definition.artifact.domain,
+        title: definition.artifact.buildTitle(input, output),
+        bodyMarkdown: definition.artifact.buildBodyMarkdown(input, output),
+        claimsManifestJson: definition.artifact.buildClaimsManifest?.(input, output) ?? {},
+        actor: runContext.actor,
+        source: "agent-runtime",
+        correlationId,
+        causationId,
+      });
 
-    // ---- Stage 9b: domain-specific canonical persistence (issue #53) ----
-    // Runs INSIDE this try, immediately after createArtifact. Unlike stage
-    // 11's isolated projection, a persistDomain failure is NOT caught here —
-    // it propagates to the outer catch below and fails the run closed, since
-    // this is the agent's own canonical record, not a best-effort external
-    // side effect.
-    if (definition.persistDomain) {
-      await definition.persistDomain(
-        { deps, runContext, agentRunId: runId },
-        input,
-        output,
-        artifactResult,
-      );
-    }
+      if (definition.persistDomain) {
+        await definition.persistDomain(
+          { deps: { ...deps, db: tx }, runContext, agentRunId: runId },
+          input,
+          output,
+          result,
+        );
+      }
+
+      return result;
+    });
 
     // ---- Stage 10: approval routing per mode ---------------------------
     // shadow: persist run + output but do NOT surface/route to approval —

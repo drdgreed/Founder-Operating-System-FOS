@@ -574,6 +574,71 @@ describe("@fos/agents runAgent — the 12-stage pipeline (ADR-07 D2, issue #50)"
     expect(run!.status).toBe("succeeded");
     expect(run!.outputRef).toBe(result.artifact!.versionId);
   });
+
+  it("FOS1-RT-18: a persistDomain throw rolls back the stage-9 artifact (issue #63) — no orphaned draft, run still errors", async () => {
+    const workspace = await seedWorkspace(ctx.db);
+    const inputSchema = z.object({ note: z.string() });
+    const outputSchema = z.object({ message: z.string() });
+    const definition: AgentDefinition<z.infer<typeof inputSchema>, z.infer<typeof outputSchema>> = {
+      key: "fos.test.persistdomain-fails",
+      version: "1.0.0",
+      objective:
+        "test-only: persistDomain throws — the createArtifact write right before it must roll back",
+      inputSchema,
+      outputSchema,
+      permittedTools: [],
+      permittedMemoryScopes: ["none"],
+      autonomyCeiling: "review",
+      featureFlagKey: "fos.test.persistdomainfail",
+      deterministicGates: [],
+      artifact: {
+        artifactType: "internal_note",
+        domain: "research",
+        buildTitle: () => "PersistDomain-fail test",
+        buildBodyMarkdown: (_i, output) => output.message,
+      },
+      // Stage 9b is canonical state: unlike stage 11's projection, a throw
+      // here must NOT be swallowed — and must roll back stage 9a's writes.
+      persistDomain: async () => {
+        throw new Error("simulated persistDomain failure");
+      },
+    };
+    await setFeatureFlag(ctx.db, {
+      workspaceId: workspace.id,
+      key: "fos.test.persistdomainfail",
+      enabled: true,
+      mode: "review",
+    });
+    const runContext: RunAgentContext = {
+      workspaceId: workspace.id,
+      actor: ACTOR,
+      trigger: TRIGGER,
+    };
+
+    await expect(
+      runAgent(
+        { db: ctx.db, modelClient: new FakeModelClient([validResult({ message: "hi" })]) },
+        definition,
+        { note: "x" },
+        runContext,
+      ),
+    ).rejects.toThrow(/simulated persistDomain failure/);
+
+    // The createArtifact write (record + version + artifact.created event)
+    // that ran immediately before the throw must be rolled back with it —
+    // zero leaked rows, not just a run marked error.
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+    expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
+
+    // The run row itself lives OUTSIDE the stage-9 transaction (stage 12's
+    // success update and the outer catch's error update both use deps.db,
+    // never tx) — so its `error` status must persist despite the rollback.
+    const [run] = await ctx.db
+      .select()
+      .from(agentRun)
+      .where(eq(agentRun.workspaceId, workspace.id));
+    expect(run?.status).toBe("error");
+  });
 });
 
 describe("FOS1-RT-09: ModelClient is required (compile-time) + credential-reference safety", () => {
