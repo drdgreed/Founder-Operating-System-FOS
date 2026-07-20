@@ -9,3 +9,4 @@ export * from "./artifact-transitions.js";
 export * from "./artifact-service.js";
 export * from "./approval-service.js";
 export * from "./enrollment-assessment-service.js";
+export * from "./interaction-service.js";

@@ -35,6 +35,11 @@
  *   nullable attribution columns on enrollment_opportunity (campaign_id,
  *   first_touch_source, last_touch_source, attribution_confidence).
  *   Schema + migrations only — no runtime/agent code (that's P1.1/P1.2).
+ *
+ * Slice P1.3a ("conversation-workflow substrate", issue #56) adds:
+ *   interaction — a derived entity (spec never fields it explicitly; see
+ *   the file header for FLAGged type choices). Schema + service only —
+ *   no agent/API/Notion wiring (that's P1.3b/P1.3c).
  */
 export * from "./fos_workspace.js";
 export * from "./product.js";
@@ -51,3 +56,4 @@ export * from "./workspace_command.js";
 export * from "./agent_run.js";
 export * from "./feature_flag.js";
 export * from "./enrollment_assessment.js";
+export * from "./interaction.js";
