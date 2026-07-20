@@ -1,0 +1,43 @@
+{
+  "fixture_id": "objection_intelligence.objection_heavy",
+  "agent_key": "fos.objection_intelligence",
+  "description": "The call surfaced multiple explicit objections (price, time commitment, outcome skepticism), all directly stated by the candidate. Every objection should be classified 'observed' with a resolvable sourceRef into evidenceRecords, since each was actually voiced in the conversation.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000311",
+      "stage": "conversation_scheduled",
+      "targetRole": "Data Analyst"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000312",
+      "firstName": "Priya",
+      "lastName": "Nair"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000313",
+      "interactionType": "discovery_call",
+      "notes": "Priya raised price concerns, said 10 hrs/week feels tight with her current job, and asked whether graduates actually get hired.",
+      "transcriptRef": "transcript://call/311"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "interaction.note.primary",
+        "sourceType": "interaction_note",
+        "content": "Priya raised price concerns, said 10 hrs/week feels tight with her current job, and asked whether graduates actually get hired."
+      }
+    ]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.objection_intelligence.mode-allowed": "pass",
+      "fos.objection_intelligence.observed-objection-has-source": "pass",
+      "fos.objection_intelligence.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "objections[] lists price, time-commitment, and outcome-skepticism as distinct entries",
+      "each entry is classification 'observed' and cites sourceRef 'interaction.note.primary'",
+      "no objection.statement or summary promises a specific discount or a guaranteed employment/interview outcome"
+    ]
+  }
+}
