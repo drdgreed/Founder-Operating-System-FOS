@@ -447,6 +447,44 @@ describe("fos.next_best_action (issue #78) — 8-gated recommendation, atomic si
     expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
   });
 
+  it("FOS1-NBA-17: prohibited-guarantee block via a NON-CONTACT action's channel — a guarantee in `channel` (consent-exempt, rendered) is STILL scanned → policy_blocked, ZERO rows", async () => {
+    const fixture = await seedNextBestActionFixture(ctx.db);
+    await enableFlag(fixture.workspace.id);
+    // A non-contact action (internal_task) is exempt from consent, so its
+    // `channel` is never checked against the allowlist — but it IS rendered
+    // into the artifact, so the guarantee gate must scan it (issue #78
+    // re-verify: FIX 2 removed the incidental consent check on non-contact
+    // channels). The guarantee lives in `channel`, not summary/rationale.
+    const modelClient = new FakeModelClient([
+      validResult(
+        buildOutput({
+          actionType: "internal_task",
+          channel: "we guarantee Ada a job offer within 30 days",
+        }),
+      ),
+    ]);
+    const runContext: RunAgentContext = {
+      workspaceId: fixture.workspace.id,
+      actor: ACTOR,
+      trigger: TRIGGER,
+    };
+
+    const result = await runAgent(
+      { db: ctx.db, modelClient },
+      fosNextBestActionAgentDefinition,
+      buildInput(fixture),
+      runContext,
+    );
+
+    expect(result.status).toBe("policy_blocked");
+    expect(result.artifact).toBeUndefined();
+    expect(
+      result.gateEvaluations?.some((g) => g.key.endsWith(".no-prohibited-guarantee") && !g.allowed),
+    ).toBe(true);
+    expect(await ctx.db.select().from(enrollmentActionRecommendation)).toHaveLength(0);
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+  });
+
   it("FOS1-NBA-11: ATOMIC — a cross-workspace opportunity id is rejected; ZERO recommendation rows AND zero artifactRecord", async () => {
     const mine = await seedNextBestActionFixture(ctx.db);
     const theirs = await seedNextBestActionFixture(ctx.db);

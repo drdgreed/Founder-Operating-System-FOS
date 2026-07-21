@@ -226,10 +226,9 @@ export const FOS_NEXT_BEST_ACTION_FEATURE_FLAG_KEY = "fos.next_best_action";
 /** FLAG (issue #78 3-layer gate): contact-ness is DERIVED from the closed
  * actionType enum, NOT trusted from a model-authored isContact/channel — a
  * model could otherwise omit `channel` to skip consent or set isContact:false
- * to skip cooldown on a genuine contact action. CONSERVATIVE classification:
- * propose_offer is treated as a CONTACT (it communicates an offer to the
- * person) — FOUNDER: confirm this. internal_task and no_action are the only
- * non-contact types. */
+ * to skip cooldown on a genuine contact action. `propose_offer` is a CONTACT
+ * (it communicates an offer to the person) — CONFIRMED by founder 2026-07-21.
+ * `internal_task` and `no_action` are the only non-contact types. */
 const NBA_CONTACT_ACTION_TYPES: ReadonlySet<string> = new Set([
   "send_follow_up_email",
   "send_follow_up_sms",
@@ -322,20 +321,22 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
     }),
     noProhibitedGuaranteeGate<NextBestActionInput, NextBestActionOutput>({
       key: "fos.next_best_action.no-prohibited-guarantee",
-      // Keep in sync with `buildBodyMarkdown` below. THREE model-authored
-      // fields are rendered into the founder-facing artifact: `summary`,
-      // `rationale`, and `recommendedDueAt`. `summary`/`rationale` are open
-      // free text; `recommendedDueAt` is now `.datetime()`-constrained (see
-      // the output schema) so it structurally cannot carry prose — but it is
-      // scanned here too as defense-in-depth (issue #78 3-layer gate). Every
-      // OTHER field (`actionType`, `channel`, `offer`, `businessImpact`,
-      // `urgency`, `confidence`, `impliedStage`) is a closed-set enum or a
-      // gate-validated identifier — none is free text a guarantee could be
-      // smuggled into.
+      // Keep in sync with `buildBodyMarkdown` below — enumerated MECHANICALLY
+      // against every field it renders (issue #78 3-layer re-verify: this list
+      // being wrong is a recurring guarantee-leak class). Model-authored free
+      // text that reaches the founder-facing artifact: `summary`, `rationale`,
+      // `recommendedDueAt` (now `.datetime()`-constrained but scanned too), and
+      // `channel`. `channel` MUST be scanned: for a CONTACT action it is
+      // constrained to the consent allowlist, but for a NON-CONTACT action
+      // consent is exempt (returns undefined), so a garbage/guarantee `channel`
+      // would otherwise render unchecked. Every OTHER rendered field
+      // (`actionType`, `offer`, `businessImpact`, `urgency`, `confidence`,
+      // `impliedStage`) is a closed-set enum or a gate-validated identifier.
       selectText: (output) => [
         output.summary,
         output.rationale,
         ...(output.recommendedDueAt ? [output.recommendedDueAt] : []),
+        ...(output.channel ? [output.channel] : []),
       ],
     }),
   ],
@@ -350,7 +351,13 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
       [
         `# Next Best Action: ${input.person.firstName} ${input.person.lastName}`,
         "",
-        `**Recommended action:** ${output.actionType}${output.channel ? ` (${output.channel})` : ""}`,
+        // Only render a channel for a CONTACT action — a non-contact action's
+        // channel is meaningless and (being consent-exempt) unvalidated, so it
+        // must not reach the artifact (issue #78 re-verify). It is also scanned
+        // by the guarantee gate above regardless.
+        `**Recommended action:** ${output.actionType}${
+          nbaActionIsContact(output.actionType) && output.channel ? ` (${output.channel})` : ""
+        }`,
         `**Offer:** ${output.offer}`,
         `**Business impact:** ${output.businessImpact} | **Urgency:** ${output.urgency} | **Confidence:** ${output.confidence}`,
         ...(output.recommendedDueAt ? [`**Recommended due:** ${output.recommendedDueAt}`] : []),
