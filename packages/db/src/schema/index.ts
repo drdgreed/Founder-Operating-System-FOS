@@ -45,6 +45,12 @@
  *   objection_record (spec §6.5), enrollment_action_recommendation (spec
  *   §6.6) — the two canonical tables the P1.4 agents attach to. Schema +
  *   service only — no agent/API/projection/gate/worker wiring.
+ *
+ * Slice P1.6 ("Campaign + CampaignTouch", issue #91) adds:
+ *   campaign (spec §6.2 / PATCH-SET-01 §B2, product-scoped + unversioned per
+ *   §C2), campaign_touch (spec §6.3 / §D2, append-only). Also LANDS the
+ *   deferred `enrollment_opportunity.campaign_id` FK -> campaign. Schema +
+ *   migration only — no agent/API/projection wiring.
  */
 export * from "./fos_workspace.js";
 export * from "./product.js";
@@ -64,3 +70,5 @@ export * from "./enrollment_assessment.js";
 export * from "./interaction.js";
 export * from "./objection_record.js";
 export * from "./enrollment_action_recommendation.js";
+export * from "./campaign.js";
+export * from "./campaign_touch.js";
