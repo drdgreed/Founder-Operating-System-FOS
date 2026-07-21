@@ -217,3 +217,107 @@ describe("enrollment_opportunity.campaign_id deferred FK lands (issue #91 P1.6)"
     }
   });
 });
+
+describe("campaign_key uniqueness (INFERENCE from product_key precedent — migration 0019)", () => {
+  it("FOS1-CAMP-07: a second campaign with the same (workspace_id, campaign_key) is rejected; the same key in a DIFFERENT workspace is allowed", async () => {
+    const ctx = await createTestDb();
+    try {
+      const { workspace, product } = await seedWorkspaceAndProduct(ctx.db);
+
+      await ctx.db
+        .insert(campaign)
+        .values({
+          workspaceId: workspace.id,
+          productId: product.id,
+          campaignKey: "beta-launch-2026",
+          name: "First",
+        })
+        .returning();
+
+      // Same (workspace_id, campaign_key) → rejected by the unique index.
+      await expect(
+        ctx.db.insert(campaign).values({
+          workspaceId: workspace.id,
+          productId: product.id,
+          campaignKey: "beta-launch-2026",
+          name: "Duplicate",
+        }),
+      ).rejects.toThrow();
+
+      // Same campaign_key under a DIFFERENT workspace is allowed — proves the
+      // uniqueness is scoped to (workspace_id, campaign_key), not global.
+      const { workspace: workspace2, product: product2 } = await seedWorkspaceAndProduct(ctx.db);
+      const [other] = await ctx.db
+        .insert(campaign)
+        .values({
+          workspaceId: workspace2.id,
+          productId: product2.id,
+          campaignKey: "beta-launch-2026",
+          name: "Other workspace, same key",
+        })
+        .returning();
+      expect(other?.campaignKey).toBe("beta-launch-2026");
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe("campaign_touch append-only guard (spec §6.3, migration 0020)", () => {
+  async function seedTouch(ctx: Awaited<ReturnType<typeof createTestDb>>) {
+    const { workspace, product } = await seedWorkspaceAndProduct(ctx.db);
+    const [camp] = await ctx.db
+      .insert(campaign)
+      .values({ workspaceId: workspace.id, productId: product.id, campaignKey: "c", name: "C" })
+      .returning();
+    if (!camp) throw new Error("campaign insert returned no row");
+    const [touch] = await ctx.db
+      .insert(campaignTouch)
+      .values({ campaignId: camp.id, channel: "linkedin", touchType: "impression" })
+      .returning();
+    if (!touch) throw new Error("campaign_touch insert returned no row");
+    return touch.id;
+  }
+
+  it("FOS1-CAMP-08: a direct UPDATE on campaign_touch raises the append-only guard at the DB layer", async () => {
+    const ctx = await createTestDb();
+    try {
+      const touchId = await seedTouch(ctx);
+      await expect(
+        ctx.db
+          .update(campaignTouch)
+          .set({ channel: "tampered" })
+          .where(eq(campaignTouch.id, touchId)),
+      ).rejects.toSatisfy((err: unknown) => causeChainMatches(err, /append-only/i));
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("FOS1-CAMP-09: a direct DELETE on campaign_touch raises the append-only guard at the DB layer", async () => {
+    const ctx = await createTestDb();
+    try {
+      const touchId = await seedTouch(ctx);
+      await expect(
+        ctx.db.delete(campaignTouch).where(eq(campaignTouch.id, touchId)),
+      ).rejects.toSatisfy((err: unknown) => causeChainMatches(err, /append-only/i));
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+/**
+ * Drizzle wraps the underlying Postgres trigger error ("campaign_touch is
+ * append-only: ...") inside a "Failed query: ..." error and chains the
+ * original via `.cause`. Walk the cause chain so the assertion is robust to
+ * that wrapping (mirrors append-only-event.test.ts).
+ */
+function causeChainMatches(err: unknown, pattern: RegExp): boolean {
+  let current: unknown = err;
+  for (let i = 0; i < 10 && current; i += 1) {
+    if (current instanceof Error && pattern.test(current.message)) return true;
+    current = current instanceof Error ? (current as { cause?: unknown }).cause : undefined;
+  }
+  return false;
+}

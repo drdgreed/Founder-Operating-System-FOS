@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "campaign_workspace_key_unique" ON "campaign" USING btree ("workspace_id","campaign_key");

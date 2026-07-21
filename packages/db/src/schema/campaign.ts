@@ -1,5 +1,15 @@
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, text, integer, jsonb, timestamp, index, check } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  integer,
+  jsonb,
+  timestamp,
+  index,
+  uniqueIndex,
+  check,
+} from "drizzle-orm/pg-core";
 import { fosWorkspace } from "./fos_workspace.js";
 import { product } from "./product.js";
 
@@ -84,8 +94,12 @@ export const campaign = pgTable(
     successMetricsJson: jsonb("success_metrics_json")
       .notNull()
       .default(sql`'{}'::jsonb`),
-    // §B2: minor units (cents), nullable. Reconciled from P1 `budget_cents`.
-    // FLAG.
+    // §B2: integer in MINOR UNITS (cents), nullable. Reconciled from P1's
+    // `budget_cents` to `budget_amount` for unit-consistency with
+    // `Offer.price_amount`. NOTE: this diverges from the repo's `*_cents`
+    // naming convention (e.g. enrollment_opportunity.estimated_value_cents);
+    // the name follows the canonical §B2 field set. FLAG — naming tension, see
+    // PR body.
     budgetAmount: integer("budget_amount"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -93,6 +107,17 @@ export const campaign = pgTable(
   (table) => ({
     workspaceIdIdx: index("campaign_workspace_id_idx").on(table.workspaceId),
     productIdIdx: index("campaign_product_id_idx").on(table.productId),
+    // `campaign_key` uniqueness is an INFERENCE from the `product_key`
+    // precedent (product.ts `product_workspace_key_unique`): spec §6.2 does
+    // not explicitly mandate it, but `campaign_key` is described as a stable
+    // slug/business key, so it must be unique within a tenant. Scoped to
+    // (workspace_id, campaign_key) — matching the product precedent, and NOT
+    // per-product, since a campaign_key is a workspace-level identifier.
+    // FLAG (uniqueness + scope choice) — see PR body for reviewer sign-off.
+    campaignKeyPerWorkspace: uniqueIndex("campaign_workspace_key_unique").on(
+      table.workspaceId,
+      table.campaignKey,
+    ),
     // §B2 status lifecycle (proposed); DB-enforced via CHECK while the
     // vocabulary is young (mirrors objection_record/enrollment_action_recommendation).
     statusValid: check(
