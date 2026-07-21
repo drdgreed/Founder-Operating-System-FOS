@@ -11,8 +11,40 @@ export interface EnrollmentOpportunityProjectionContext {
   lastSyncedAt: Date;
 }
 
+/** Notion caps a single rich_text object's `content` at 2000 characters. */
+const NOTION_RICH_TEXT_MAX = 2000;
+
+/**
+ * Notion rich_text property. `null` -> `{ rich_text: [] }`. A non-null string is
+ * emitted as one text object, EXCEPT content longer than Notion's 2000-char
+ * per-object cap, which is split into consecutive <=2000-char objects (Notion
+ * concatenates them into one continuous value). Without the split, a single
+ * over-long value — e.g. an LLM-generated `fit_summary` / `next_action_summary`
+ * — would make the Notion API reject the ENTIRE page write with a 400
+ * `validation_error`, silently dropping the whole projection. (Splitting on
+ * UTF-16 code units can in theory divide a surrogate pair at a chunk boundary;
+ * acceptable for the business prose these fields carry.)
+ */
 function richText(content: string | null) {
-  return { rich_text: content === null ? [] : [{ text: { content } }] };
+  if (content === null) return { rich_text: [] };
+  if (content.length <= NOTION_RICH_TEXT_MAX) return { rich_text: [{ text: { content } }] };
+  const parts: { text: { content: string } }[] = [];
+  for (let i = 0; i < content.length; i += NOTION_RICH_TEXT_MAX) {
+    parts.push({ text: { content: content.slice(i, i + NOTION_RICH_TEXT_MAX) } });
+  }
+  return { rich_text: parts };
+}
+
+/**
+ * Notion `select` property from a FREE-TEXT value. `null` OR empty string ->
+ * `{ select: null }` (property cleared). Notion rejects a select whose option
+ * `name` is empty, and an empty-string `currency` still satisfies the column's
+ * NOT NULL, so it must not become `{ select: { name: "" } }`. (Enum-backed
+ * selects like `Stage`/`Sync Status` are guaranteed non-empty and do not need
+ * this guard.)
+ */
+function selectProp(name: string | null) {
+  return { select: name === null || name === "" ? null : { name } };
 }
 
 /**
@@ -108,7 +140,7 @@ export function enrollmentOpportunityToNotionProperties(
     // Value (major units; see doc-comment)
     "Estimated Value": majorUnitProp(opp.estimatedValueCents),
     "Actual Value": majorUnitProp(opp.actualValueCents),
-    Currency: { select: { name: opp.currency } },
+    Currency: selectProp(opp.currency),
 
     // Last interaction
     "Last Interaction At": dateProp(opp.lastInteractionAt),

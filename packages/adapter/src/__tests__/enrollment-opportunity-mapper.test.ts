@@ -274,4 +274,41 @@ describe("enrollmentOpportunityToNotionProperties §7.2 fields (issue #86, P1.5a
     expect(properties["Last Synced At"]).toEqual({ date: { start: "2026-07-18T12:00:00.000Z" } });
     expect(properties.Stage).toEqual({ select: { name: "enrolled" } });
   });
+
+  it("FOS1-PRJ-06: rich_text over Notion's 2000-char cap splits into lossless, concatenating chunks", () => {
+    // A realistic LLM-generated summary can exceed Notion's 2000-char per-object
+    // limit; one over-long value must not 400 the whole page write.
+    const long = "a".repeat(4500); // -> 2000 + 2000 + 500
+    const opp = makeOpportunity({ nextActionSummary: long });
+
+    const properties = enrollmentOpportunityToNotionProperties(opp, CTX) as {
+      "Next Action": { rich_text: { text: { content: string } }[] };
+    };
+    const parts = properties["Next Action"].rich_text;
+
+    expect(parts).toHaveLength(3);
+    expect(parts.map((p) => p.text.content.length)).toEqual([2000, 2000, 500]);
+    expect(parts.every((p) => p.text.content.length <= 2000)).toBe(true);
+    // lossless: chunks concatenate back to the original value
+    expect(parts.map((p) => p.text.content).join("")).toEqual(long);
+  });
+
+  it("FOS1-PRJ-06b: content at exactly the 2000-char boundary stays a single chunk", () => {
+    const exact = "b".repeat(2000);
+    const opp = makeOpportunity({ fitSummary: exact });
+
+    const properties = enrollmentOpportunityToNotionProperties(opp, CTX);
+
+    expect(properties.Summary).toEqual({ rich_text: [{ text: { content: exact } }] });
+  });
+
+  it("FOS1-PRJ-07: empty-string currency projects as { select: null }, not an invalid empty-name select", () => {
+    // Empty string satisfies the column's NOT NULL; Notion rejects a select
+    // whose option name is empty, so it must clear the property instead.
+    const opp = makeOpportunity({ currency: "" });
+
+    const properties = enrollmentOpportunityToNotionProperties(opp, CTX);
+
+    expect(properties.Currency).toEqual({ select: null });
+  });
 });
