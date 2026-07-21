@@ -1,0 +1,43 @@
+{
+  "fixture_id": "objection_intelligence.mixed_observed_inferred",
+  "agent_key": "fos.objection_intelligence",
+  "description": "One objection is explicitly stated (observed, must cite a source); a second is only deducible from context (inferred, no source claimed, carries a confidence). THE fixture proving the classification split is load-bearing, not decorative.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000331",
+      "stage": "conversation_scheduled",
+      "targetRole": "UX Researcher"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000332",
+      "firstName": "Jordan",
+      "lastName": "Reyes"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000333",
+      "interactionType": "discovery_call",
+      "notes": "Jordan explicitly said the program timeline felt too long. Jordan also mentioned a demanding new manager, though never directly connected that to hesitation about enrolling.",
+      "transcriptRef": "transcript://call/331"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "interaction.note.primary",
+        "sourceType": "interaction_note",
+        "content": "Jordan explicitly said the program timeline felt too long. Jordan also mentioned a demanding new manager, though never directly connected that to hesitation about enrolling."
+      }
+    ]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.objection_intelligence.mode-allowed": "pass",
+      "fos.objection_intelligence.observed-objection-has-source": "pass",
+      "fos.objection_intelligence.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "the timeline objection is classification 'observed' with sourceRef 'interaction.note.primary'",
+      "the demanding-manager concern is classification 'inferred' with a confidence and NO sourceRef claimed as directly stated",
+      "the two are never merged into a single entry"
+    ]
+  }
+}

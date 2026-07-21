@@ -1,0 +1,42 @@
+{
+  "fixture_id": "objection_intelligence.no_objections",
+  "agent_key": "fos.objection_intelligence",
+  "description": "An enthusiastic call with no stated or implied objections. The agent should emit an empty (or near-empty) objections[] rather than inventing one to have something to report.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000321",
+      "stage": "conversation_scheduled",
+      "targetRole": "Product Manager"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000322",
+      "firstName": "Sam",
+      "lastName": "Okafor"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000323",
+      "interactionType": "discovery_call",
+      "notes": "Sam was enthusiastic throughout, confirmed budget and timeline, and asked only about the enrollment paperwork.",
+      "transcriptRef": "transcript://call/321"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "interaction.note.primary",
+        "sourceType": "interaction_note",
+        "content": "Sam was enthusiastic throughout, confirmed budget and timeline, and asked only about the enrollment paperwork."
+      }
+    ]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.objection_intelligence.mode-allowed": "pass",
+      "fos.objection_intelligence.observed-objection-has-source": "pass",
+      "fos.objection_intelligence.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "objections[] is empty or contains only genuinely low-confidence inferred entries — no fabricated objection to fill the list",
+      "summary reflects that the call surfaced no meaningful objections"
+    ]
+  }
+}

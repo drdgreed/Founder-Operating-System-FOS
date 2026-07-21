@@ -280,3 +280,75 @@ export async function seedPostCallSynthesisFixture(
 
   return { workspace, product: prod, person: personRow, opportunity, interaction: interactionRow };
 }
+
+/**
+ * Seeds an EnrollmentOpportunity + Person chain plus a COMPLETED Interaction
+ * for the `fos.objection_intelligence` agent tests (issue #73) — mirrors
+ * `seedPostCallSynthesisFixture` exactly, since both agents run on the same
+ * completed-conversation substrate (spec §9.2 step 4).
+ *
+ * Accepts an optional already-seeded `workspace` row for the same reason as
+ * `seedPostCallSynthesisFixture`: exercising the
+ * "interaction belongs to a different opportunity" check.
+ */
+export async function seedObjectionIntelligenceFixture(
+  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
+) {
+  const workspace = existingWorkspace ?? (await seedWorkspace(db));
+
+  const [prod] = await db
+    .insert(product)
+    .values({
+      workspaceId: workspace.id,
+      productKey: `career-foundry-${randomUUID().slice(0, 8)}`,
+      name: "Career Foundry",
+      productType: "product",
+      parentProductId: null,
+    })
+    .returning();
+  if (!prod) throw new Error("seedObjectionIntelligenceFixture: product insert returned no row");
+
+  const [personRow] = await db
+    .insert(person)
+    .values({
+      workspaceId: workspace.id,
+      firstName: "Ada",
+      lastName: "Lovelace",
+      currentRole: "Data Analyst",
+      currentCompany: "Acme Corp",
+      location: "Remote",
+      source: "website_application",
+      lifecycleType: "applicant",
+    })
+    .returning();
+  if (!personRow)
+    throw new Error("seedObjectionIntelligenceFixture: person insert returned no row");
+
+  const [opportunity] = await db
+    .insert(enrollmentOpportunity)
+    .values({
+      workspaceId: workspace.id,
+      productId: prod.id,
+      personId: personRow.id,
+      stage: "conversation_scheduled",
+      currency: "USD",
+      version: 1,
+    })
+    .returning();
+  if (!opportunity)
+    throw new Error(
+      "seedObjectionIntelligenceFixture: enrollment_opportunity insert returned no row",
+    );
+
+  const interactionRow = await createInteraction(db, {
+    workspaceId: workspace.id,
+    opportunityId: opportunity.id,
+    interactionType: "discovery_call",
+    status: "completed",
+    scheduledAt: new Date("2026-07-25T15:00:00.000Z"),
+    occurredAt: new Date("2026-07-25T15:32:00.000Z"),
+  });
+
+  return { workspace, product: prod, person: personRow, opportunity, interaction: interactionRow };
+}

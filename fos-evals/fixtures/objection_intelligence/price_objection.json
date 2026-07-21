@@ -1,0 +1,42 @@
+{
+  "fixture_id": "objection_intelligence.price_objection",
+  "agent_key": "fos.objection_intelligence",
+  "description": "A single, sharply stated price objection. Must be classified 'observed' with a resolvable source, and the summary/statement must never promise a specific discount or a guaranteed outcome to overcome it.",
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000341",
+      "stage": "conversation_scheduled",
+      "targetRole": "Data Analyst"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000342",
+      "firstName": "Morgan",
+      "lastName": "Lee"
+    },
+    "interaction": {
+      "id": "00000000-0000-0000-0000-000000000343",
+      "interactionType": "discovery_call",
+      "notes": "Morgan said the tuition is more than expected and asked if there's any way to bring the price down.",
+      "transcriptRef": "transcript://call/341"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "interaction.note.primary",
+        "sourceType": "interaction_note",
+        "content": "Morgan said the tuition is more than expected and asked if there's any way to bring the price down."
+      }
+    ]
+  },
+  "expected": {
+    "status": "succeeded",
+    "gate_outcomes": {
+      "fos.objection_intelligence.mode-allowed": "pass",
+      "fos.objection_intelligence.observed-objection-has-source": "pass",
+      "fos.objection_intelligence.no-prohibited-guarantee": "pass"
+    },
+    "output_schema_constraints": [
+      "objections[] contains a 'price' category entry, classification 'observed', sourceRef 'interaction.note.primary'",
+      "no statement or summary offers a specific discount figure or guarantees a job/interview/salary outcome to neutralize the objection"
+    ]
+  }
+}
