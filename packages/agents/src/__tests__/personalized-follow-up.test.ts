@@ -372,6 +372,32 @@ describe("fos.personalized_follow_up (issue #82) — external-facing DRAFT, no a
     expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
   });
 
+  it("FOS1-FOLLOWUP-cta-undetermined: the literal `undetermined` sentinel does NOT bypass the CTA-available check (sentinel disabled) → policy_blocked, no artifact", async () => {
+    const fixture = await seedPersonalizedFollowUpFixture(ctx.db);
+    await enableFlag(fixture.workspace.id);
+    // "undetermined" is the shared gate's DEFAULT sentinel (allowed
+    // unconditionally). This agent disables it (undeterminedValue: null)
+    // because a CTA is required — the model must not escape the availableCTAs
+    // set by emitting the sentinel string. It is not in availableCTAs → block.
+    const modelClient = new FakeModelClient([
+      validResult(buildOutput({ primaryCTA: "undetermined" })),
+    ]);
+
+    const result = await runAgent(
+      { db: ctx.db, modelClient },
+      fosPersonalizedFollowUpAgentDefinition,
+      buildInput(fixture),
+      reviewRun(fixture),
+    );
+
+    expect(result.status).toBe("policy_blocked");
+    expect(result.artifact).toBeUndefined();
+    expect(
+      result.gateEvaluations?.some((g) => g.key.endsWith(".cta-available") && !g.allowed),
+    ).toBe(true);
+    expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+  });
+
   it("FOS1-FOLLOWUP-personalization-unresolvable: a personalization sourceRef not in evidenceRecords → policy_blocked at facts-resolve-to-sources, no artifact", async () => {
     const fixture = await seedPersonalizedFollowUpFixture(ctx.db);
     await enableFlag(fixture.workspace.id);

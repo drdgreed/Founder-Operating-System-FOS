@@ -265,13 +265,16 @@ export const fosPersonalizedFollowUpAgentDefinition: AgentDefinition<
     // CTA-available: the single primaryCTA must be in `availableCTAs`. Same
     // shape as offer/pathway availability — REUSE `recommendedPathwayAvailableGate`
     // (issue #60 precedent) with the "CTA" subject label rather than a new
-    // gate. There is no undetermined sentinel — a CTA is required, so a value
-    // not in the set always blocks.
+    // gate. A CTA is REQUIRED — there is no legitimate "undetermined" CTA — so
+    // the sentinel is DISABLED (`undeterminedValue: null`): every value must be
+    // in the set, and the model cannot bypass the check by emitting the
+    // "undetermined" string (issue #82 3-layer gate, silent-failure finding).
     recommendedPathwayAvailableGate<PersonalizedFollowUpInput, PersonalizedFollowUpOutput>({
       key: "fos.personalized_follow_up.cta-available",
       selectRecommendedPathway: (output) => output.primaryCTA,
       selectAvailablePathways: (input) => input.availableCTAs,
       subjectLabel: "CTA",
+      undeterminedValue: null,
     }),
     // Claims discipline: every claim in the manifest must be in the approved
     // set. FLAG: full claims-approved-for-channel-and-offer gate is P1.8.
