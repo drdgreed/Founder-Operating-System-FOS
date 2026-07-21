@@ -6,6 +6,7 @@ import { agentRun } from "../../schema/agent_run.js";
 import { featureFlag } from "../../schema/feature_flag.js";
 import { enrollmentAssessment } from "../../schema/enrollment_assessment.js";
 import { enrollmentOpportunity } from "../../schema/enrollment_opportunity.js";
+import { campaign } from "../../schema/campaign.js";
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -312,7 +313,15 @@ describe("enrollment_opportunity attribution extensions (spec §6.1, issue #48)"
       expect(bare.lastTouchSource).toBeNull();
       expect(bare.attributionConfidence).toBeNull();
 
-      const campaignId = crypto.randomUUID();
+      // P1.6 (issue #91) landed the campaign_id FK -> campaign, so a round-trip
+      // value must reference a real campaign (a bare random uuid is now
+      // correctly rejected by the FK — see FOS1-CAMP-06).
+      const [camp] = await ctx.db
+        .insert(campaign)
+        .values({ workspaceId: workspace.id, productId: product.id, campaignKey: "c", name: "C" })
+        .returning();
+      if (!camp) throw new Error("campaign insert returned no row");
+      const campaignId = camp.id;
       const [populated] = await ctx.db
         .insert(enrollmentOpportunity)
         .values({

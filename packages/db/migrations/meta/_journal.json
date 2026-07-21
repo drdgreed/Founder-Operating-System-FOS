@@ -127,6 +127,27 @@
       "when": 1784566356095,
       "tag": "0017_boring_bastion",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784671494702,
+      "tag": "0018_graceful_dark_phoenix",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784672632555,
+      "tag": "0019_mysterious_lyja",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784672640000,
+      "tag": "0020_append_only_campaign_touch",
+      "breakpoints": true
     }
   ]
 }
