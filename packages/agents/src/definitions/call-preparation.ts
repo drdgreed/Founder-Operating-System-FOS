@@ -214,10 +214,10 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
     // preparation recommends no pathway, unlike enrollment-brief.
     //
     // FLAG (issue #60): no dedicated claims-approved gate — the full
-    // claims-approved-for-channel-and-offer gate is P1.8. This
-    // no-prohibited-guarantee gate is the safety net for `permittedClaims`
-    // in this slice; it cannot verify a claim is *approved*, only that it
-    // carries no prohibited guarantee.
+    // claims-approved-for-channel-and-offer gate is P1.8. The stage-7b semantic
+    // compliance review is the safety net for `permittedClaims` in this slice; it
+    // cannot verify a claim is *approved*, only that it carries no prohibited
+    // guarantee.
   ],
   // Stage-7b semantic compliance review (Option C slice 2, issue #109) — the
   // eval-validated guarantee classifier replaces the removed keyword gate. It

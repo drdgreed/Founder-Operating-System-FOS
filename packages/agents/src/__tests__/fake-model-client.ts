@@ -49,11 +49,16 @@ export function invalidResult(): GenerateStructuredResult {
 // The pipeline's compliance-review stage takes an INJECTABLE reviewer
 // (`deps.complianceReviewer`) so tests decide the compliance verdict WITHOUT
 // scripting classifier model calls through the generation `FakeModelClient`.
-// `guaranteeKeywordReviewer` mirrors what the real classifier does for the test
-// corpus: BLOCK any text mentioning "guarantee" (every guarantee-injection
-// fixture in this package contains that word), ALLOW everything else — so ONE
-// stub drives both the happy-path (benign → allow) and guarantee-injection
-// (guarantee → block) scenarios across every migrated agent.
+// `guaranteeKeywordReviewer` is a deliberately DUMB keyword stub — it does NOT
+// mirror the real semantic classifier (which catches guarantees lacking the word
+// "guarantee" like "we'll get you hired" and ALLOWS readiness copy). It only
+// BLOCKs text containing "guarantee" and ALLOWs the rest, which is sufficient to
+// drive these tests because every guarantee-injection fixture in this package
+// contains that word. These tests therefore prove only the STAGE WIRING (the
+// right field is selected and a block terminates the run), NOT real-classifier
+// recall — that is validated by the slice-1 real-model eval. If you add a
+// fixture whose guarantee OMITS the word "guarantee", this stub will silently
+// ALLOW it: use a purpose-built stub for that case.
 // ---------------------------------------------------------------------------
 
 /** Blocks any text containing "guarantee" (case-insensitive); allows the rest. */

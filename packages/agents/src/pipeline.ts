@@ -329,9 +329,19 @@ export async function runAgent<TInput, TOutput>(
 
       let complianceBlockReason: string | null = null;
       try {
-        for (const text of definition.complianceReviewText(output)) {
+        // Skip empty/whitespace strings (optional fields often yield "" — the
+        // removed keyword gate ignored them; classifying "" wastes a model call
+        // and can fail closed to a spurious block) and dedupe identical strings
+        // so a long output does not fire redundant classifier calls.
+        const texts = [
+          ...new Set(definition.complianceReviewText(output).filter((t) => t.trim().length > 0)),
+        ];
+        for (const text of texts) {
           const decision = await reviewer(text);
-          if (decision.verdict === "block") {
+          // Fail CLOSED: block on anything that is not an explicit "allow"
+          // (symmetric with the classifier's own fail-closed stance — a custom
+          // reviewer returning a malformed verdict must never fall through to allow).
+          if (decision.verdict !== "allow") {
             complianceBlockReason = decision.reason;
             break;
           }
