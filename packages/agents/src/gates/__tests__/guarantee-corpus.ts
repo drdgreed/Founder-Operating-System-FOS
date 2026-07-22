@@ -74,22 +74,20 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
   { text: "you'll land a job in 90 days", expected: "block", note: "confirmed; acquired job" },
 
   // --- BOUNDARY rows (labeled exactly per the contract) -------------------
-  {
-    text: "you'll be well-practiced at interviewing",
-    expected: "allow",
-    note: "BOUNDARY pair A: practice → allow",
-  },
+  // The ALLOW halves of the two boundary pairs live verbatim in CONFIRMED ALLOW
+  // above ("you'll be well-practiced at interviewing", "you'll graduate
+  // job-ready") — carried there with BOUNDARY notes — so they are NOT repeated
+  // here (dedupe, Fix 6). These are the BLOCK halves.
   {
     text: "we'll get you an interview",
     expected: "block",
-    note: "BOUNDARY pair A: acquired interview → block",
+    note: "BOUNDARY pair A: acquired interview → block (allow half: 'well-practiced at interviewing')",
   },
   {
-    text: "you'll graduate job-ready",
-    expected: "allow",
-    note: "BOUNDARY pair B: readiness → allow",
+    text: "we'll get you a job",
+    expected: "block",
+    note: "BOUNDARY pair B: acquired job → block (allow half: 'graduate job-ready')",
   },
-  { text: "we'll get you a job", expected: "block", note: "BOUNDARY pair B: acquired job → block" },
 
   // --- ADDED ALLOW (mine; strengthen precision on readiness copy) ---------
   {
