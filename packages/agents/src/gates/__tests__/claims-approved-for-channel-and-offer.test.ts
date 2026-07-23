@@ -202,8 +202,11 @@ describe("FOS1-CLAIMOFFER-fail-closed", () => {
 });
 
 describe("FOS1-CLAIMOFFER-no-clock", () => {
-  // When no `now` selector is wired, the effectiveness dimension is NOT enforced
-  // (caller opt-out); approval + channel + offer are still enforced.
+  // Without a `now` selector, effectiveness cannot be PROVEN. A claim that
+  // declares a window blocks fail-closed (weaken-by-omission is not allowed for
+  // a safety gate — §11 line 405 makes "effective" mandatory); a WINDOWLESS
+  // approved claim passes (there is nothing to enforce). Approval + channel +
+  // offer are always enforced.
   const gateNoClock = claimsApprovedForChannelAndOfferGate<FakeInput, FakeOutput>({
     key: "fos.personalized_follow_up.claims-approved-no-clock",
     selectClaims: (output) => output.claimsManifest,
@@ -212,12 +215,23 @@ describe("FOS1-CLAIMOFFER-no-clock", () => {
     selectOffer: (_output, input) => input.offer,
   });
 
-  it("ALLOW: without a clock, an out-of-window claim is not blocked on effectiveness", async () => {
+  const APPROVED_NO_WINDOW = {
+    claim: APPROVED_2026.claim,
+    channels: APPROVED_2026.channels,
+    offers: APPROVED_2026.offers,
+  };
+
+  it("BLOCK: a windowed claim without a clock fails closed (effectiveness unprovable)", async () => {
     const result = await gateNoClock.evaluate(
-      ctx(
-        { approvedClaims: [APPROVED_2026], now: "2099-01-01T00:00:00.000Z" },
-        { claimsManifest: [APPROVED_2026.claim] },
-      ),
+      ctx({ approvedClaims: [APPROVED_2026] }, { claimsManifest: [APPROVED_2026.claim] }),
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toMatch(/no clock was supplied/);
+  });
+
+  it("ALLOW: a windowless approved claim without a clock passes (nothing to enforce)", async () => {
+    const result = await gateNoClock.evaluate(
+      ctx({ approvedClaims: [APPROVED_NO_WINDOW] }, { claimsManifest: [APPROVED_NO_WINDOW.claim] }),
     );
     expect(result.allowed).toBe(true);
   });

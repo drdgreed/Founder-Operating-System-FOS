@@ -134,7 +134,21 @@ export function claimsApprovedForChannelAndOfferGate<TInput, TOutput>(
             reason: `claim "${claim}" is not approved for offer "${offer}"`,
           };
         }
-        if (nowMs !== undefined) {
+        const hasWindow =
+          approved.effectiveFrom !== undefined || approved.effectiveTo !== undefined;
+        if (nowMs === undefined) {
+          // No clock supplied. Effectiveness (§11 line 405 — a MANDATORY claim
+          // dimension) cannot be proven, so if this approved claim declares a
+          // window, block rather than silently skip it — weaken-by-omission is
+          // the failure to avoid for a safety gate. Only a windowless approved
+          // claim may pass without a clock (there is nothing to enforce).
+          if (hasWindow) {
+            return {
+              allowed: false,
+              reason: `claim "${claim}" carries an effective window but no clock was supplied to validate effectiveness (fail-closed)`,
+            };
+          }
+        } else {
           // FAIL CLOSED: an approved entry checked for effectiveness must carry
           // a complete, parseable window; a missing or malformed bound means we
           // cannot prove the claim is currently effective — the dangerous

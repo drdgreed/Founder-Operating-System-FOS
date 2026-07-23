@@ -41,6 +41,16 @@ export interface PlatformDraftGateOptions<TInput, TOutput> {
 export function platformDraftGate<TInput, TOutput>(
   options: PlatformDraftGateOptions<TInput, TOutput>,
 ): Gate<TInput, TOutput> {
+  // REQUIRE ≥1 precondition. Spec §9.4 step 9 / §7.3 mandate claims + consent
+  // REVALIDATION at draft time; an empty precondition list would certify
+  // eligibility on approval-state alone, silently skipping that revalidation —
+  // weaken-by-omission, the failure to avoid for a safety gate. Fail fast at
+  // wiring time so a caller can never forget the preconditions.
+  if (options.preconditionGates.length === 0) {
+    throw new Error(
+      "platformDraftGate requires at least one precondition gate (claims + consent revalidation, §9.4 step 9) — approval state alone cannot certify external-draft eligibility",
+    );
+  }
   const approvedStates = options.approvedStates ?? DEFAULT_APPROVED_STATES;
   return {
     key: options.key,

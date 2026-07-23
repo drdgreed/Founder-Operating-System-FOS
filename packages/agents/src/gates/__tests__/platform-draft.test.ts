@@ -121,14 +121,14 @@ describe("FOS1-PLATDRAFT-fail-closed", () => {
     expect((await custom.evaluate(ctx({ approvalState: "approved" }, {}))).allowed).toBe(false);
   });
 
-  it("edge: with no precondition gates, approval state alone gates (composition is empty-safe)", async () => {
-    const bare = platformDraftGate<FakeInput, FakeOutput>({
-      key: "bare",
-      selectApprovalState: (input) => input.approvalState,
-      preconditionGates: [],
-    });
-    expect((await bare.evaluate(ctx({}, {}))).allowed).toBe(true);
-    expect((await bare.evaluate(ctx({ approvalState: "draft" }, {}))).allowed).toBe(false);
+  it("throws at construction when no precondition gates are supplied (claims/consent revalidation is mandatory, §9.4 step 9)", () => {
+    expect(() =>
+      platformDraftGate<FakeInput, FakeOutput>({
+        key: "bare",
+        selectApprovalState: (input) => input.approvalState,
+        preconditionGates: [],
+      }),
+    ).toThrow(/at least one precondition/);
   });
 
   it("edge: a blocking precondition gate short-circuits (fail-closed composition)", async () => {
