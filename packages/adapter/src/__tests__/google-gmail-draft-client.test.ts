@@ -43,6 +43,12 @@ function decodeRaw(raw: string): string {
   return Buffer.from(raw, "base64url").toString("utf8");
 }
 
+/** Extracts + base64-decodes the message body (everything after the header/body blank line). */
+function decodeBody(mime: string): string {
+  const body = mime.split("\r\n\r\n").slice(1).join("\r\n\r\n");
+  return Buffer.from(body.replace(/\r\n/g, ""), "base64").toString("utf8");
+}
+
 const OK_DRAFT = { id: "r-123456", message: { id: "m-789" } };
 
 describe("GoogleGmailDraftClient — request/response contract (stubbed fetch, no network)", () => {
@@ -82,13 +88,22 @@ describe("GoogleGmailDraftClient — request/response contract (stubbed fetch, n
       body: "Line one.\nLine two.",
     });
 
-    const mime = decodeRaw(calls[0]!.bodyJson.message.raw);
+    const raw = calls[0]!.bodyJson.message.raw;
+    // The `raw` envelope must be base64URL, not standard base64: its alphabet
+    // excludes +, /, and padding =. The MIME length here is not a multiple of
+    // 3, so a downgrade to `.toString("base64")` would introduce padding/+//
+    // — this pins base64url (a tolerant decoder alone would not catch it).
+    expect(raw).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(raw).not.toMatch(/[+/=]/);
+
+    const mime = decodeRaw(raw);
     expect(mime).toContain("To: grace@example.com");
     expect(mime).toContain("Subject: Interview prep");
     expect(mime).toContain('Content-Type: text/plain; charset="UTF-8"');
     expect(mime).toContain("MIME-Version: 1.0");
-    // Headers are separated from the body by a blank line, and the body is intact.
-    expect(mime).toMatch(/\r\n\r\nLine one\.\nLine two\.$/);
+    expect(mime).toContain("Content-Transfer-Encoding: base64");
+    // Body is base64-transfer-encoded; it decodes back to the original intact.
+    expect(decodeBody(mime)).toBe("Line one.\nLine two.");
   });
 
   it("RFC 2047 encoded-word encodes a non-ASCII subject; a UTF-8 body round-trips byte-for-byte", async () => {
@@ -109,8 +124,8 @@ describe("GoogleGmailDraftClient — request/response contract (stubbed fetch, n
     expect(/[^\x00-\x7F]/.test(subjectLine)).toBe(false);
     const b64 = subjectLine.replace("Subject: =?UTF-8?B?", "").replace("?=", "");
     expect(Buffer.from(b64, "base64").toString("utf8")).toBe("Félicitations 🎉");
-    // The UTF-8 body survives the base64url envelope unchanged.
-    expect(mime).toContain("Café ☕ — you're ready.");
+    // The UTF-8 body survives base64 transfer-encoding byte-for-byte.
+    expect(decodeBody(mime)).toBe("Café ☕ — you're ready.");
   });
 
   it("fetches a fresh token per call (provider seam for OAuth refresh)", async () => {
@@ -126,6 +141,29 @@ describe("GoogleGmailDraftClient — request/response contract (stubbed fetch, n
 
     expect(calls[0]!.headers.Authorization).toBe("Bearer token-1");
     expect(calls[1]!.headers.Authorization).toBe("Bearer token-2");
+  });
+
+  it("fails closed on a CRLF-injected subject (header injection) — throws, no fetch", async () => {
+    const { fetchImpl, calls } = makeStubFetch(() => jsonResponse(200, OK_DRAFT));
+    const client = new GoogleGmailDraftClient({ getAccessToken: () => "t", fetchImpl });
+
+    // A pure-ASCII subject carrying CRLF would smuggle a hidden Bcc header if
+    // the value were interpolated raw (CR/LF are ASCII, so encoded-word does
+    // NOT neutralize them). It must be rejected before any request.
+    await expect(
+      client.createDraft({ to: "a@b.com", subject: "Hi\r\nBcc: evil@example.com", body: "b" }),
+    ).rejects.toThrow(/header injection/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed on a CRLF-injected recipient (header injection) — throws, no fetch", async () => {
+    const { fetchImpl, calls } = makeStubFetch(() => jsonResponse(200, OK_DRAFT));
+    const client = new GoogleGmailDraftClient({ getAccessToken: () => "t", fetchImpl });
+
+    await expect(
+      client.createDraft({ to: "a@b.com\r\nBcc: evil@example.com", subject: "s", body: "b" }),
+    ).rejects.toThrow(/header injection/);
+    expect(calls).toHaveLength(0);
   });
 
   it("fails closed on an empty token — throws and never calls fetch", async () => {

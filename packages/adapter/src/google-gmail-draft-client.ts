@@ -54,9 +54,9 @@ export class GoogleGmailDraftClient implements GmailDraftClient {
     const raw = encodeRawMessage(input);
 
     const token = await this.getAccessToken();
-    if (!token) {
-      // Fail closed: without a token we cannot create the draft, and we must
-      // never proceed with an empty Bearer header.
+    if (!token || token.trim().length === 0) {
+      // Fail closed: without a real token we cannot create the draft, and we
+      // must never proceed with an empty/blank Bearer header.
       throw new Error("GoogleGmailDraftClient: getAccessToken returned an empty token");
     }
 
@@ -100,31 +100,62 @@ async function safeReadBody(response: Response): Promise<string> {
 
 /**
  * Builds a base64url-encoded RFC 5322 message for the Gmail `raw` field. The
- * message is UTF-8 throughout; a non-ASCII subject is RFC 2047 encoded-word
- * encoded so header parsers see valid ASCII, while the body stays UTF-8 (the
- * outer base64url makes the whole thing transport-safe).
+ * body is base64-transfer-encoded (RFC 2045) so an 8-bit UTF-8 body is
+ * strictly conformant rather than relying on the `7bit` default; a non-ASCII
+ * subject is RFC 2047 encoded-word encoded so header parsers see valid ASCII.
+ * Header values are rejected if they contain a raw line break (header-injection
+ * defense — see `assertNoCrlf`).
  */
 function encodeRawMessage(input: GmailDraftInput): string {
   const headers = [
-    `To: ${input.to}`,
-    `Subject: ${encodeHeaderValue(input.subject)}`,
+    `To: ${assertNoCrlf(input.to, "to")}`,
+    `Subject: ${encodeSubject(input.subject)}`,
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
   ];
-  const message = `${headers.join("\r\n")}\r\n\r\n${input.body}`;
+  const body = foldBase64(Buffer.from(input.body, "utf8").toString("base64"));
+  const message = `${headers.join("\r\n")}\r\n\r\n${body}`;
   return Buffer.from(message, "utf8").toString("base64url");
 }
 
 /**
- * RFC 2047 encoded-word for a header value that contains non-ASCII (e.g. an
- * accented name or emoji in a subject). ASCII-only values pass through
- * unchanged so the common case stays human-readable in the raw message.
+ * Header-injection defense: a raw CR or LF in a header value would let crafted
+ * input (a tampered/adversarial recipient or subject) smuggle extra headers
+ * (e.g. a hidden `Bcc:`) into a founder-approved draft. CR/LF are ASCII, so the
+ * encoded-word path below does NOT neutralize them — reject fail-closed instead
+ * of silently stripping, so malformed input never yields a subtly different
+ * draft than what was approved.
  */
-function encodeHeaderValue(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  if (!/[^\x00-\x7F]/.test(value)) {
-    return value;
+function assertNoCrlf(value: string, field: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(
+      `GoogleGmailDraftClient: ${field} header contains a line break (possible header injection) — refusing to build the draft`,
+    );
   }
-  const encoded = Buffer.from(value, "utf8").toString("base64");
+  return value;
+}
+
+/**
+ * RFC 2047 encoded-word for a subject that contains non-ASCII (an accented name
+ * or emoji). ASCII-only subjects pass through unchanged so the common case
+ * stays human-readable. Rejects a raw line break first (see `assertNoCrlf`).
+ */
+function encodeSubject(subject: string): string {
+  assertNoCrlf(subject, "subject");
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7F]/.test(subject)) {
+    return subject;
+  }
+  const encoded = Buffer.from(subject, "utf8").toString("base64");
   return `=?UTF-8?B?${encoded}?=`;
+}
+
+/** Folds a base64 string into <=76-char CRLF-separated lines (RFC 2045). */
+function foldBase64(b64: string): string {
+  const lines: string[] = [];
+  for (let i = 0; i < b64.length; i += 76) {
+    lines.push(b64.slice(i, i + 76));
+  }
+  return lines.join("\r\n");
 }
