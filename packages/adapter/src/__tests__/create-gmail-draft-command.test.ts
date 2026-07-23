@@ -66,6 +66,12 @@ async function seedArtifact(
     approvalStatus: string;
     versionNumber: number;
     bodyMarkdown?: string;
+    /**
+     * The DERIVED record-level `status` mirror. Defaults to `approvalStatus` so
+     * the common case seeds a consistent record+version. Set it INDEPENDENTLY to
+     * prove the executor reads the authoritative version status, not the mirror.
+     */
+    recordStatus?: string;
   },
 ) {
   const [record] = await db
@@ -75,7 +81,7 @@ async function seedArtifact(
       artifactType: "enrollment_message",
       domain: "enrollment",
       title: "Welcome email",
-      status: input.approvalStatus as never,
+      status: (input.recordStatus ?? input.approvalStatus) as never,
     })
     .returning();
   if (!record) throw new Error("seedArtifact: artifact_record insert returned no row");
@@ -458,6 +464,84 @@ describe("executeGmailDraftCommands (issue #117, slice P1.8b — Create Gmail dr
       expect(result.succeeded).toBe(0);
       expect(calls).toHaveLength(0);
       expect((await readCommand(db, command.id)).status).toBe("rejected");
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS1-GMAIL-08: reads the AUTHORITATIVE version status — record mirror says 'approved' but the version is 'draft' -> rejected, no draft", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const workspace = await seedWorkspace(db);
+      // The record-level mirror is stale/tampered to "approved", but the
+      // authoritative lifecycle carrier — the current version's approval_status
+      // (§E2) — is still "draft". The executor MUST refuse on the version.
+      const { record } = await seedArtifact(db, {
+        workspaceId: workspace.id,
+        approvalStatus: "draft",
+        recordStatus: "approved",
+        versionNumber: 1,
+      });
+      const command = await insertGmailCommand(db, {
+        workspaceId: workspace.id,
+        artifactId: record.id,
+        targetVersion: 1,
+        idempotencyKey: "gmail-key-mirror-drift",
+      });
+      const { client, calls } = makeFakeGmail();
+
+      const result = await executeGmailDraftCommands(db, client, { workspaceId: workspace.id });
+
+      // If the executor trusted record.status it would draft; reading the version
+      // status, it rejects.
+      expect(result.rejectedNotApproved).toBe(1);
+      expect(result.succeeded).toBe(0);
+      expect(calls).toHaveLength(0);
+
+      const updated = await readCommand(db, command.id);
+      expect(updated.status).toBe("rejected");
+      expect(updated.rejectionReason).toMatch(/not approved/i);
+
+      const events = await readCommandEvents(db, command.id);
+      const rejected = events.find((e) => e.type === "workspace_command.rejected");
+      expect((rejected!.payload as { artifactStatus: string }).artifactStatus).toBe("draft");
+    } finally {
+      await close();
+    }
+  });
+
+  it("FOS1-GMAIL-09: a command already 'executing' (claimed by a concurrent runner) is never re-loaded -> no second createDraft", async () => {
+    const { db, close } = await createTestDb();
+    try {
+      const workspace = await seedWorkspace(db);
+      const { record } = await seedArtifact(db, {
+        workspaceId: workspace.id,
+        approvalStatus: "approved",
+        versionNumber: 1,
+      });
+      const command = await insertGmailCommand(db, {
+        workspaceId: workspace.id,
+        artifactId: record.id,
+        targetVersion: 1,
+        idempotencyKey: "gmail-key-inflight",
+      });
+      // Simulate another runner having already claimed this command via the CAS
+      // (received -> executing) and being mid-flight in its external call.
+      await db
+        .update(workspaceCommand)
+        .set({ status: "executing" })
+        .where(eq(workspaceCommand.id, command.id));
+      const { client, calls } = makeFakeGmail();
+
+      const result = await executeGmailDraftCommands(db, client, { workspaceId: workspace.id });
+
+      // Only `received` commands are loaded, so an in-flight command is invisible
+      // to a second runner — the CAS claim is what prevents a duplicate draft.
+      expect(result.commandsLoaded).toBe(0);
+      expect(result.succeeded).toBe(0);
+      expect(calls).toHaveLength(0);
+      // The in-flight command is untouched (still owned by the first runner).
+      expect((await readCommand(db, command.id)).status).toBe("executing");
     } finally {
       await close();
     }
