@@ -26,6 +26,16 @@ import { createTestDb, seedStalledFixture, seedWorkspace, setFeatureFlag } from 
 const NOW = "2026-01-10T00:00:00.000Z";
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
 
+// The NBA agent now runs through the stage-7b semantic compliance review
+// (Option C slice 2). These worker tests script only the agent's OWN generation
+// via FakeModelClient; inject a pass-through reviewer so the compliance stage
+// does not make a second (unscripted) model call and fail closed. The NBA output
+// under test carries no prohibited guarantee, so "allow" is the correct verdict.
+const passReviewer = async (_text: string) => ({
+  verdict: "allow" as const,
+  reason: "test-stub: benign",
+});
+
 const ALLOWED_ACTIONS_BY_STAGE: NextBestActionInput["allowedActionsByStage"] = {
   new_lead: [],
   reviewing: [],
@@ -100,7 +110,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([validResult(buildNbaOutput())]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -137,7 +147,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([]); // must never be called
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       {
         workspaceId: fx.workspace.id,
         now: NOW,
@@ -166,7 +176,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -190,7 +200,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -209,7 +219,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -225,7 +235,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -241,7 +251,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([validResult(buildNbaOutput())]);
 
     await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -267,11 +277,17 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     ]);
     const params = { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() };
 
-    const first = await runStalledOpportunityJob({ db: ctx.db, modelClient }, params);
+    const first = await runStalledOpportunityJob(
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
+      params,
+    );
     expect(first.stalledOpportunityIds).toEqual([fx.opportunity.id]);
     expect(await ctx.db.select().from(enrollmentActionRecommendation)).toHaveLength(1);
 
-    const second = await runStalledOpportunityJob({ db: ctx.db, modelClient }, params);
+    const second = await runStalledOpportunityJob(
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
+      params,
+    );
     // The proposed recommendation from run 1 makes the opportunity no longer
     // stalled — run 2 detects nothing and writes nothing.
     expect(second.stalledOpportunityIds).toEqual([]);
@@ -293,7 +309,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([validResult(buildNbaOutput())]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: mine.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -322,7 +338,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     const modelClient = new FakeModelClient([validResult(buildNbaOutput())]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 
@@ -350,7 +366,7 @@ describe("runStalledOpportunityJob (issue #84) — detect stalled opps + invoke 
     ]);
 
     const result = await runStalledOpportunityJob(
-      { db: ctx.db, modelClient },
+      { db: ctx.db, modelClient, complianceReviewer: passReviewer },
       { workspaceId: fx.workspace.id, now: NOW, config: buildConfig() },
     );
 

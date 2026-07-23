@@ -17,13 +17,16 @@ export default defineConfig({
             "**/dist/**",
             "**/.{idea,git,cache,output,temp}/**",
             "packages/db/**",
+            "packages/adapter/**",
           ],
           environment: "node",
         },
       },
-      // @fos/db project: concurrency is capped inside packages/db/vitest.config.ts
-      // to avoid parallel fresh-PGlite contention (issue #72). Scoped to db only.
+      // @fos/db + @fos/adapter projects: concurrency is capped inside each
+      // package's vitest.config.ts to avoid parallel fresh-PGlite contention
+      // (issue #72). Scoped to those packages only; all others stay parallel.
       "./packages/db/vitest.config.ts",
+      "./packages/adapter/vitest.config.ts",
     ],
   },
 });
