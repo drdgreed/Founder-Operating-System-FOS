@@ -16,3 +16,4 @@ export * from "./definitions/next-best-action.js";
 export * from "./definitions/personalized-follow-up.js";
 export * from "./definitions/beta-launch-editorial.js";
 export * from "./definitions/substack-cornerstone.js";
+export * from "./definitions/channel-derivative.js";
