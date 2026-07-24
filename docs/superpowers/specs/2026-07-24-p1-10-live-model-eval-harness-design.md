@@ -279,14 +279,15 @@ This is a genuine hole in Phase-1 coverage. Naming it explicitly rather than abs
 
 ## 8. Safety properties this design must not break
 
-| Property                                                         | How it is preserved                                                                                                                                                              |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ModelClient` is injectable and required — no implicit real call | The runner constructs `AnthropicModelClient` **only** under `--live`. `--dry-run` is the default; omitting the flag never spends.                                                |
-| No canonical DB write                                            | Ephemeral PGlite only (D4). The runner takes no `DATABASE_URL`.                                                                                                                  |
-| API key never enters an agent transcript                         | Read from `process.env.ANTHROPIC_API_KEY` via the existing `credentialReference` indirection; the runner never logs or prints it. Same posture as `scripts/gmail-live-draft.ts`. |
-| No LLM in the gate path                                          | D3 — the grader is pure Python over typed fields.                                                                                                                                |
-| Gates fail closed                                                | Unchanged. The grader **observes** the prefix behavior (§5); it does not alter it.                                                                                               |
-| `fos-evals` stays quarantined from the TS plane                  | Transcript JSONL is the only interface. No shared code, no shared types, no imports either direction.                                                                            |
+| Property                                                         | How it is preserved                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ModelClient` is injectable and required — no implicit real call | The runner constructs `AnthropicModelClient` **only** under `--live`. `--dry-run` is the default; omitting the flag never spends.                                                                                                                                                                                                       |
+| No canonical DB write                                            | Ephemeral PGlite only (D4). The runner takes no `DATABASE_URL`.                                                                                                                                                                                                                                                                         |
+| **No canonical Notion write** (AMENDED 2026-07-24)               | `fos.enrollment_brief` projects to Notion at stage 11. The harness injects a stub `NotionClient` whose `fetchImpl` never reaches the network, under its own `credentialReference` env var, so a real Notion token in the environment still cannot produce a real page. **This row was missing from the original draft** — see plan §A2. |
+| API key never enters an agent transcript                         | Read from `process.env.ANTHROPIC_API_KEY` via the existing `credentialReference` indirection; the runner never logs or prints it. Same posture as `scripts/gmail-live-draft.ts`.                                                                                                                                                        |
+| No LLM in the gate path                                          | D3 — the grader is pure Python over typed fields.                                                                                                                                                                                                                                                                                       |
+| Gates fail closed                                                | Unchanged. The grader **observes** the prefix behavior (§5); it does not alter it.                                                                                                                                                                                                                                                      |
+| `fos-evals` stays quarantined from the TS plane                  | Transcript JSONL is the only interface. No shared code, no shared types, no imports either direction.                                                                                                                                                                                                                                   |
 
 ---
 
@@ -297,6 +298,14 @@ This is a genuine hole in Phase-1 coverage. Naming it explicitly rather than abs
 3. **Where do transcripts land?** Gitignored `fos-evals/transcripts/` vs. a scratch dir. They contain only synthetic data, so committing a reference run is defensible and would make regressions diffable.
 
 _(A fourth question — how Python learns each definition's declared gate list — was resolved during spec review: the runner emits `declared_gate_keys` into the transcript. See §4 and §5.)_
+
+### Amendments made during planning (2026-07-24)
+
+Reading source while writing the P1.10a plan surfaced three things this design missed. All are recorded in full in `docs/superpowers/plans/2026-07-24-p1-10a-eval-transcript-emitter.md`:
+
+- **A1 — fixture entity IDs must be rebound.** Fixtures hardcode placeholder UUIDs; `persistDomain` loads the opportunity to assert workspace ownership, so a run using them verbatim fails with `status: "error"` for reasons unrelated to the model. The runner seeds canonical rows and overwrites the ID fields.
+- **A2 — Notion isolation was missing** from §8 above. Now added.
+- **A3 — the v1 fixtures are already stale.** They assert `fos.enrollment_brief.no-prohibited-guarantee`, a gate deleted in PR #110 when the stage-7b semantic compliance review replaced it. The definition declares three gates, not four. This is the §5 rule-4 case occurring in real data before any grader code exists — useful corroboration that the rule earns its keep.
 
 ---
 
