@@ -51,4 +51,20 @@ describe("eval runner (dry-run)", () => {
       expect(transcript.artifact?.version_status).not.toBe("approved");
     }
   }, 120_000);
+
+  it("FOS1-EVALRUN-07: runs actually execute — no transcript errors, and the happy path succeeds", async () => {
+    const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 1 });
+
+    // `error` means the harness itself broke (a failed seed, an unbound entity id,
+    // a thrown runAgent). It is never a legitimate dry-run outcome, so any
+    // occurrence is a harness defect rather than a model-behaviour signal.
+    const errored = transcripts.filter((t) => t.status === "error");
+    expect(errored.map((t) => `${t.fixture_id}: ${t.error}`)).toEqual([]);
+
+    // At least one fixture must reach `succeeded`, which requires the model
+    // output to satisfy the agent's Zod schema AND every gate to pass AND the
+    // artifact to persist. Without this, an all-`evaluation_failed` run — the
+    // exact failure this suite hit during development — reads as green.
+    expect(transcripts.some((t) => t.status === "succeeded")).toBe(true);
+  }, 120_000);
 });
