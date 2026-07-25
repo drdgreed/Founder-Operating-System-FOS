@@ -66,7 +66,7 @@ This is precisely the §5 rule-4 case the design predicts, found in real data be
 | `packages/contracts/src/eval-fixture.test.ts` (create)              | Fixture schema tests.                                                                                               |
 | `packages/agents/src/testing/eval-harness.ts` (create)              | Exported eval substrate: ephemeral DB, workspace/opportunity seeding, stub Notion client, stub compliance reviewer. |
 | `packages/agents/src/__tests__/test-db.ts` (modify)                 | Re-export the moved helpers so all 11 existing agent test files keep working unchanged.                             |
-| `packages/agents/src/index.ts` (modify)                             | Export `./testing/eval-harness.js`.                                                                                 |
+| `packages/agents/src/index.ts`                                      | **Unchanged** — the harness is deliberately not in the root barrel (founder ruling A, Task 3 Step 5).               |
 | `fos-evals/fixtures/enrollment_brief/*.json` (modify ×7, create ×1) | Schema-v2 fixtures + the paired benign control.                                                                     |
 | `scripts/eval-run.ts` (create)                                      | The runner. Loads fixtures, seeds, binds IDs, invokes `runAgent`, writes JSONL.                                     |
 | `scripts/__tests__/eval-run.test.ts` (create)                       | Runner integration test.                                                                                            |
@@ -551,7 +551,7 @@ Moves the four DB helpers the runner needs out of `__tests__/` (not an importabl
 
 - Create: `packages/agents/src/testing/eval-harness.ts`
 - Modify: `packages/agents/src/__tests__/test-db.ts` (delete the four moved functions; re-export them)
-- Modify: `packages/agents/src/index.ts` (add one export line)
+- **Do NOT modify** `packages/agents/src/index.ts` — see Step 5 (founder ruling, option A)
 - Create: `packages/agents/src/testing/eval-harness.test.ts`
 
 **Interfaces:**
@@ -858,13 +858,11 @@ Then update the remaining seed functions' `db` parameter type from
 `Awaited<ReturnType<typeof createTestDb>>["db"]` to `EvalDb` (same type, now
 imported), and delete the now-unused `PGlite`/`drizzle`/`migrate`/`fosWorkspace`/`featureFlag`/`applicationSubmission`/`fileURLToPath`/`dirname`/`join`/`MIGRATIONS_FOLDER` imports and constants that only the moved functions used. Keep `randomUUID`, `product`, `person`, `enrollmentOpportunity`, `createInteraction`, and `FeatureFlagMode` if still referenced.
 
-- [ ] **Step 5: Export the harness from the package index**
+- [ ] **Step 5: Do NOT export the harness from the package index**
 
-Append to `packages/agents/src/index.ts`:
+**Founder ruling, 2026-07-24 (option A).** An earlier revision of this plan told you to append `export * from "./testing/eval-harness.js"` to `packages/agents/src/index.ts`. **Do not.** `export *` evaluates eagerly, so that line pulls `@electric-sql/pglite` — a **devDependency** — into `@fos/agents`'s production module graph. `apps/worker` depends on `@fos/agents`, so any build that prunes devDependencies (`npm ci --omit=dev`) would crash the worker at module load with `Cannot find module '@electric-sql/pglite'`, triggered by an unrelated import.
 
-```typescript
-export * from "./testing/eval-harness.js";
-```
+`packages/agents/src/index.ts` must be left **unmodified** by this task. Task 5's script imports the harness by direct path instead.
 
 - [ ] **Step 6: Run the harness tests**
 
@@ -1184,6 +1182,7 @@ v1 fixture was asserting a gate that no longer exists."
 - Create: `scripts/eval-run.ts`
 - Create: `scripts/__tests__/eval-run.test.ts`
 - Modify: `vitest.config.ts` — **required**, see Step 0
+- **Do NOT modify** `packages/agents/src/index.ts`
 
 **Interfaces:**
 
@@ -1306,15 +1305,21 @@ import {
   runAgent,
   fosEnrollmentBriefAgentDefinition,
   FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
+  type ModelClient,
+  type GenerateStructuredResult,
+  type RunAgentContext,
+} from "@fos/agents";
+// The eval harness is deliberately NOT re-exported from @fos/agents's root
+// barrel: `export *` is eager, and it would drag @electric-sql/pglite (a
+// devDependency) into the production module graph of every consumer,
+// including apps/worker. Import it by direct path instead.
+import {
   createEvalDb,
   seedEnrollmentBriefFixture,
   setEvalFeatureFlag,
   createStubNotionClient,
   stubComplianceReviewer,
-  type ModelClient,
-  type GenerateStructuredResult,
-  type RunAgentContext,
-} from "@fos/agents";
+} from "../packages/agents/src/testing/eval-harness.js";
 import { artifactVersion } from "@fos/db/schema";
 import { eq } from "drizzle-orm";
 
