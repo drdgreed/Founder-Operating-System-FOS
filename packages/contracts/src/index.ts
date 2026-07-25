@@ -181,3 +181,4 @@ export function validateEventPayload(type: string, payload: unknown): void {
 }
 
 export * from "./eval-transcript.js";
+export * from "./eval-fixture.js";
