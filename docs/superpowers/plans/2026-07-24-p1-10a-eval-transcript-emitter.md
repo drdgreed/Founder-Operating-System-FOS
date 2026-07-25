@@ -18,6 +18,8 @@
 - **No new dependencies.** Everything needed (`zod`, `tsx`, `@electric-sql/pglite`, `drizzle-orm`) is already declared. Adding one requires founder approval per `CLAUDE.md`.
 - **Never weaken, skip, or delete an existing test.** The suite is 598 passing / 4 skipped across 63 files. It must still be 598 passing at the end of every task.
 - **`npm run lint` (`prettier --check .`) must pass before every commit** — it gates `typecheck` and `test` in CI, and it governs Markdown and JSON too (lesson P-002, `docs/AGENT_LESSONS.md`).
+- **`scripts/` is not an npm workspace, so `npm run typecheck` does not cover it.** (`"typecheck": "npm run typecheck --workspaces --if-present"`; workspaces are `packages/*` and `apps/*`.) The two existing scripts are untypechecked today for the same reason. Vitest transpiles without typechecking, so a type error in `scripts/eval-run.ts` surfaces only as a runtime failure in its test. Do not claim "typecheck covers the runner" — it does not.
+- **Report test results as a delta plus a floor, never as an absolute total.** The suite baseline is 598 passing / 4 skipped. Each task states how many tests it adds; verification is "the new tests pass AND the pre-existing 598 still pass." Absolute totals drift the moment any other branch lands a test.
 - **Zero real network calls and zero model spend in this entire slice.** P1.10a is dry-run only. `AnthropicModelClient` is never constructed. The `--live` flag does not exist yet; it lands in P1.10c.
 - **Never open a connection to canonical Postgres.** The runner must not read `DATABASE_URL`.
 - **Gate keys are string literals owned by the agent definitions.** Never invent one; read it from `packages/agents/src/definitions/enrollment-brief.ts`.
@@ -306,7 +308,7 @@ Expected: PASS — 5 passed.
 - [ ] **Step 6: Verify nothing regressed and lint is clean**
 
 Run: `npm run lint && npm run typecheck && npm test`
-Expected: lint clean; typecheck clean; `Tests 603 passed | 4 skipped`.
+Expected: lint clean; typecheck clean; the 5 new `FOS1-EVALTX-*` tests pass and the 598 pre-existing tests still pass (598 + 5 = 603, but verify the delta, not the total).
 
 - [ ] **Step 7: Commit**
 
@@ -530,7 +532,7 @@ Expected: PASS — 6 passed.
 - [ ] **Step 6: Verify nothing regressed**
 
 Run: `npm run lint && npm run typecheck && npm test`
-Expected: lint clean; typecheck clean; `Tests 609 passed | 4 skipped`.
+Expected: lint clean; typecheck clean; the 6 new `FOS1-EVALFX-*` tests pass and no pre-existing test regressed.
 
 - [ ] **Step 7: Commit**
 
@@ -883,7 +885,7 @@ Expected output: `0`.
 - [ ] **Step 8: Full verification**
 
 Run: `npm run lint && npm run typecheck && npm test`
-Expected: lint clean; typecheck clean; `Tests 613 passed | 4 skipped`.
+Expected: lint clean; typecheck clean; the 4 new `FOS1-EVALHX-*` tests pass and **all 598 pre-existing tests still pass** — this is the task that touches shared test infrastructure, so a regression here is the expected failure mode.
 
 - [ ] **Step 9: Commit**
 
@@ -1160,7 +1162,7 @@ Expected: clean. If it fails, run `npm run format` and re-run.
 - [ ] **Step 8: Full verification**
 
 Run: `npm run typecheck && npm test`
-Expected: typecheck clean; `Tests 634 passed | 4 skipped`.
+Expected: typecheck clean; the 19 new `FOS1-EVALFIX-*` tests pass (1 + 8 + 8 + 1 + 1 — two of them are `it.each` over 8 fixture files) and no pre-existing test regressed.
 
 - [ ] **Step 9: Commit**
 
@@ -1181,6 +1183,7 @@ v1 fixture was asserting a gate that no longer exists."
 
 - Create: `scripts/eval-run.ts`
 - Create: `scripts/__tests__/eval-run.test.ts`
+- Modify: `vitest.config.ts` — **required**, see Step 0
 
 **Interfaces:**
 
@@ -1188,6 +1191,22 @@ v1 fixture was asserting a gate that no longer exists."
 - Produces: `runEvalSuite(options)` returning `RunTranscript[]`; a CLI entrypoint.
 
 > **`FakeModelClient` lives in `__tests__/` and is therefore not importable here.** Task 5 Step 3 defines a local `StubModelClient` in `scripts/eval-run.ts` instead — a few lines, and it keeps the script free of any dependency on a test-only surface.
+
+- [ ] **Step 0: Make vitest collect `scripts/` tests — WITHOUT THIS THE TASK'S TESTS NEVER RUN**
+
+The root `vitest.config.ts` default project collects only `packages/**/*.test.ts` and `apps/**/*.test.ts`. A test under `scripts/` is silently never collected — it does not fail, it simply does not exist as far as the suite is concerned. Add the third pattern:
+
+```typescript
+          include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "scripts/**/*.test.ts"],
+```
+
+Verify the pattern took effect before writing any code:
+
+```bash
+npx vitest list 2>/dev/null | grep -c 'scripts/' || echo 0
+```
+
+Expected after Step 1 creates the file: a non-zero count. (Right now, zero — there is no such file yet.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1582,12 +1601,12 @@ Expected: the `--dry-run is required` message and `exit=2`.
 - [ ] **Step 7: Full verification**
 
 Run: `npm run lint && npm run typecheck && npm test`
-Expected: lint clean; typecheck clean; `Tests 640 passed | 4 skipped`.
+Expected: lint clean; typecheck clean (note: `typecheck` does NOT cover `scripts/` — see Global Constraints); the 6 new `FOS1-EVALRUN-*` tests pass and no pre-existing test regressed.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add scripts/eval-run.ts scripts/__tests__/eval-run.test.ts
+git add scripts/eval-run.ts scripts/__tests__/eval-run.test.ts vitest.config.ts
 git commit -m "feat(evals): dry-run eval runner emitting run transcripts (P1.10a)"
 ```
 
