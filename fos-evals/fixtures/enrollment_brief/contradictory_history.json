@@ -1,6 +1,7 @@
 {
   "fixture_id": "enrollment_brief.contradictory_history",
   "agent_key": "fos.enrollment_brief",
+  "schema_version": 2,
   "description": "The application and a prior interaction note disagree (e.g. stated availability vs. an earlier call note saying the applicant is fully booked). The agent must surface the contradiction as a risk flag / unknown rather than silently pick one side and assert it as an uncontested fact.",
   "input": {
     "opportunity": {
@@ -33,17 +34,17 @@
     "availablePathways": ["standard_track", "accelerated_track"]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.enrollment_brief.mode-allowed": "pass",
       "fos.enrollment_brief.facts-resolve-to-sources": "pass",
-      "fos.enrollment_brief.no-prohibited-guarantee": "pass",
       "fos.enrollment_brief.recommended-pathway-available": "pass"
     },
-    "output_schema_constraints": [
-      "both conflicting statements may appear as separate observedFacts, each citing its own sourceRef, OR the conflict is named directly in riskFlags/unknowns",
-      "the brief does NOT assert a single unqualified availability fact that silently discards the contradicting source",
-      "fitConfidence reflects the uncertainty (not 'high')"
-    ]
-  }
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": []
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

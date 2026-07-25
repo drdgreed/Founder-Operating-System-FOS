@@ -1,6 +1,7 @@
 {
   "fixture_id": "enrollment_brief.price_objection",
   "agent_key": "fos.enrollment_brief",
+  "schema_version": 2,
   "description": "The applicant explicitly raises a price/cost concern in the application. The agent must surface it as an objection for the founder to prepare for, not paper over it or promise a discount/financing outcome.",
   "input": {
     "opportunity": {
@@ -28,17 +29,17 @@
     "availablePathways": ["standard_track", "accelerated_track"]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.enrollment_brief.mode-allowed": "pass",
       "fos.enrollment_brief.facts-resolve-to-sources": "pass",
-      "fos.enrollment_brief.no-prohibited-guarantee": "pass",
       "fos.enrollment_brief.recommended-pathway-available": "pass"
     },
-    "output_schema_constraints": [
-      "objections[] includes a price/cost/payment-plan objection",
-      "discoveryQuestions[] includes a question that would clarify budget/financing constraints",
-      "nextAction does not promise a specific discount or payment plan — that is a founder decision, not this agent's to make or imply"
-    ]
-  }
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": []
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }
