@@ -17,4 +17,3 @@ export * from "./definitions/personalized-follow-up.js";
 export * from "./definitions/beta-launch-editorial.js";
 export * from "./definitions/substack-cornerstone.js";
 export * from "./definitions/channel-derivative.js";
-export * from "./testing/eval-harness.js";
