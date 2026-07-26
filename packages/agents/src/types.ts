@@ -60,6 +60,18 @@ export interface RunAgentDeps {
    * compliance mock is decoupled from the generation model mock.
    */
   complianceReviewer?: ComplianceReviewer;
+  /**
+   * How many stage-7b compliance-review texts may be classified at once.
+   * Defaults to `DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY`. The texts are
+   * independent — each is a separate classification of a separate string — so
+   * reviewing them one at a time made a successful run's latency the SUM of
+   * every classifier call. A real enrollment brief renders 12-20 reviewable
+   * texts, which dominated live-run wall time.
+   *
+   * Set to 1 to force the original strictly-sequential behaviour (tests that
+   * assert call ordering do this).
+   */
+  complianceReviewConcurrency?: number;
 }
 
 export interface ArtifactSpec<TInput, TOutput> {

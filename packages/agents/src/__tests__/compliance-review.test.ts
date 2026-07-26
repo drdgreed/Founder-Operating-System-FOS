@@ -337,3 +337,140 @@ describe("stage-7b semantic compliance review (issue #109)", () => {
     expect(new Set(states.map((s) => JSON.stringify(s))).size).toBe(3);
   });
 });
+
+describe("stage 7b — bounded-concurrency compliance review", () => {
+  /** A definition whose reviewable texts are exactly the strings we pass in,
+   * so a test controls both the count and which ones block. */
+  function multiTextDefinition(texts: string[]) {
+    return {
+      ...crTestDefinition,
+      complianceReviewText: () => texts,
+    };
+  }
+
+  it("FOS1-CR-09: texts are reviewed CONCURRENTLY, not one at a time", async () => {
+    const ctx = await createTestDb();
+    try {
+      const fixture = await seedWorkspace(ctx.db);
+      await setFeatureFlag(ctx.db, {
+        workspaceId: fixture.id,
+        key: crTestDefinition.featureFlagKey,
+        enabled: true,
+        mode: "review",
+      });
+
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const slowAllowReviewer = async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 25));
+        inFlight -= 1;
+        return { verdict: "allow" as const, reason: "ok" };
+      };
+
+      await runAgent(
+        {
+          db: ctx.db,
+          modelClient: new FakeModelClient([
+            validResult({ message: "benign readiness statement" }),
+          ]),
+          complianceReviewer: slowAllowReviewer,
+        },
+        multiTextDefinition(["a", "b", "c", "d", "e", "f"]),
+        { note: "x" },
+        { workspaceId: fixture.id, actor: ACTOR, trigger: TRIGGER },
+      );
+
+      // Sequential would peak at 1. This is the whole point of the change.
+      expect(maxInFlight).toBeGreaterThan(1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("FOS1-CR-10: the reported reason is the EARLIEST blocking text, even when a later one resolves first", async () => {
+    const ctx = await createTestDb();
+    try {
+      const fixture = await seedWorkspace(ctx.db);
+      await setFeatureFlag(ctx.db, {
+        workspaceId: fixture.id,
+        key: crTestDefinition.featureFlagKey,
+        enabled: true,
+        mode: "review",
+      });
+
+      // "late-blocker" settles immediately; "early-blocker" is deliberately
+      // slow. Under a naive Promise.all + first-settled-wins, the reported
+      // reason would be the LATE one and would flip with network timing —
+      // making deterministic_eval_json irreproducible for the same output.
+      const timingSkewedReviewer = async (text: string) => {
+        if (text === "early-blocker") {
+          await new Promise((r) => setTimeout(r, 40));
+          return { verdict: "block" as const, reason: "EARLY" };
+        }
+        if (text === "late-blocker") return { verdict: "block" as const, reason: "LATE" };
+        return { verdict: "allow" as const, reason: "ok" };
+      };
+
+      const result = await runAgent(
+        {
+          db: ctx.db,
+          modelClient: new FakeModelClient([
+            validResult({ message: "benign readiness statement" }),
+          ]),
+          complianceReviewer: timingSkewedReviewer,
+        },
+        multiTextDefinition(["early-blocker", "filler", "late-blocker"]),
+        { note: "x" },
+        { workspaceId: fixture.id, actor: ACTOR, trigger: TRIGGER },
+      );
+
+      expect(result.status).toBe("policy_blocked");
+      expect(result.complianceReview?.reason).toBe("EARLY");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("FOS1-CR-11: texts AFTER the blocker are never classified (the early exit `break` used to give)", async () => {
+    const ctx = await createTestDb();
+    try {
+      const fixture = await seedWorkspace(ctx.db);
+      await setFeatureFlag(ctx.db, {
+        workspaceId: fixture.id,
+        key: crTestDefinition.featureFlagKey,
+        enabled: true,
+        mode: "review",
+      });
+
+      const seen: string[] = [];
+      const blockOnFirstReviewer = async (text: string) => {
+        seen.push(text);
+        return text === "t0"
+          ? { verdict: "block" as const, reason: "blocked at t0" }
+          : { verdict: "allow" as const, reason: "ok" };
+      };
+
+      await runAgent(
+        {
+          db: ctx.db,
+          modelClient: new FakeModelClient([
+            validResult({ message: "benign readiness statement" }),
+          ]),
+          complianceReviewer: blockOnFirstReviewer,
+          // Concurrency 1 makes the early-exit assertion exact rather than
+          // racy: with a wider pool, t1..t5 may already be in flight.
+          complianceReviewConcurrency: 1,
+        },
+        multiTextDefinition(["t0", "t1", "t2", "t3", "t4", "t5"]),
+        { note: "x" },
+        { workspaceId: fixture.id, actor: ACTOR, trigger: TRIGGER },
+      );
+
+      expect(seen).toEqual(["t0"]);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
