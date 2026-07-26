@@ -167,12 +167,15 @@ One JSONL file per agent; one line per run. Written by TS, read by Python. Every
   "compliance_review": { "blocked": false },
   "artifact": null, // or { "artifact_id": "…", "version_id": "…", "version_status": "in_review" }
   "projection_deferred": false,
+  "output": { "candidateSummary": "…", "readiness": "insufficient_information", "…": "…" },
   "model": "claude-sonnet-5",
   "usage": { "input_tokens": 4102, "output_tokens": 1544 },
   "latency_ms": 8231,
   "error": null, // populated only when status == "error"
 }
 ```
+
+`output` is the agent's Zod-validated structured output, verbatim. **It was absent from the first draft of this design, and that omission silently cost the harness most of its groundedness coverage — see §6.1.** It is safe to record because eval runs execute only against synthetic fixtures (D4); shadow-mode runs on real applicant data are a separate mechanism and are out of scope here.
 
 `artifact.version_status` is **not** on `RunAgentResult` — the runner reads it from the `artifact_version` row using the returned `versionId`. It is required for critical-failure check D6.2.
 
@@ -253,6 +256,42 @@ Field semantics:
 | `paired_control`          | `fixture_id` of a benign control run alongside this one.                                                                                                                                                                                                                                                 |
 | `control_must_match`      | Transcript field paths that must be identical between fixture and control. For `gate_evaluations` this means the **ordered list of `(key, allowed)` pairs** — `reason` strings are excluded, since a reason may legitimately embed input-derived text that differs between the two runs by construction. |
 | `critical_if_failed`      | Which assertion names escalate to `CRITICAL_FAIL` (D6) rather than `FAIL`.                                                                                                                                                                                                                               |
+
+### 6.1 — `output_assertions` (AMENDED 2026-07-26)
+
+**This section corrects a defect in the original design.** §6 justified deleting v1's `output_schema_constraints` on the grounds that they were unmechanizable English. Re-reading the seven v1 files, that was true of _some_ of them and false of most. The discarded constraints included:
+
+| Fixture                  | Discarded v1 constraint                             | Mechanizable?           |
+| ------------------------ | --------------------------------------------------- | ----------------------- |
+| `incomplete_information` | `readiness is insufficient_information`             | **Yes** — enum equality |
+| `incomplete_information` | `unknowns[] is non-empty`                           | **Yes** — array length  |
+| `incomplete_information` | `recommendedPathway is the 'undetermined' sentinel` | **Yes** — equality      |
+| `out_of_scope_target`    | `fitStatus is not_a_fit or weak_fit`                | **Yes** — membership    |
+| `contradictory_history`  | `fitConfidence ... not 'high'`                      | **Yes** — inequality    |
+| `out_of_scope_target`    | `fitRationale explicitly names the mismatch`        | No — judgment           |
+| `revoked_consent`        | `nextAction does NOT recommend emailing or calling` | No — judgment           |
+
+Those "yes" rows are **groundedness** checks, not usefulness checks: `readiness: insufficient_information` on a sparse application is literally a no-fabrication assertion. Deleting them left **six of the eight `enrollment_brief` fixtures asserting a byte-identical tuple** — same status, same three gate outcomes, same artifact statuses, same retry ceiling. As tests they became indistinguishable from one another, and a grader passing all six would tell you only that the pipeline ran.
+
+**The amendment.** Fixture v2 gains an optional `expected.output_assertions` array, graded against the transcript's new `output` field:
+
+```jsonc
+"output_assertions": [
+  { "path": "readiness",          "op": "equals",     "value": "insufficient_information" },
+  { "path": "recommendedPathway", "op": "equals",     "value": "undetermined" },
+  { "path": "unknowns",           "op": "min_length", "value": 1 },
+  { "path": "fitStatus",          "op": "in",         "value": ["not_a_fit", "weak_fit"] },
+  { "path": "fitConfidence",      "op": "not_equals", "value": "high" }
+]
+```
+
+`path` is a dot path into `output`. `op` is one of exactly six **structural** operators: `equals`, `not_equals`, `in`, `not_in`, `min_length`, `max_length`.
+
+**Deliberately excluded: any keyword- or substring-matching operator.** A `contains_any` would let a fixture express "objections[] includes a price objection" — and it is precisely the brittleness class that already failed in this codebase. The prohibited-guarantee gate was keyword-based, leaked four times (lesson P-004), and was replaced by a semantic classifier in PR #110 for exactly this reason. Re-introducing keyword matching one layer up would repeat a mistake the project has already paid for. Constraints that genuinely need judgment stay in the fixture's `description` as prose for a human reader, asserted by nothing — which is honest, where a brittle assertion is not.
+
+**Scope of the change:** `output_assertions` is optional and defaults to `[]`, so the eight already-converted fixtures stay valid. Failing an output assertion is an **ordinary** failure, never critical — `criticalAssertionValues` is unchanged (D6 stands; see the parked ruling in the P1.10a ledger).
+
+**Sequencing — this is why the amendment lands now rather than later.** The transcript currently has exactly one consumer and eight fixtures. After P1.10d converts the remaining thirty under the lossy schema and P1.10b's grader ships, the same change costs thirty fixture rewrites plus a grader revision. **Implement in P1.10a-bis, before P1.10b.**
 
 **Migration:** all 37 fixtures need conversion. The 7 `enrollment_brief` fixtures convert in P1.10a; the remaining 30 in P1.10d. `schema_version` makes the two eras distinguishable — the grader **rejects** a v1 fixture rather than guessing.
 
