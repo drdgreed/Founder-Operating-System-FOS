@@ -2,18 +2,36 @@
  * The eval runner (design §7 P1.10a). Executes every fixture for one agent
  * against an ephemeral eval database and writes one run transcript per run.
  *
- * SAFETY — this script is DRY-RUN ONLY. There is no `--live` flag in P1.10a:
- *   - the model client is a local stub; `AnthropicModelClient` is never
- *     constructed, so no Anthropic call and no spend can occur;
+ * SAFETY — one of `--dry-run` or `--live` is REQUIRED; neither is the default,
+ * so an incomplete command line can never spend money by accident.
+ *
+ *   --dry-run  the model client is a local stub and stage 7b uses an
+ *              always-allow reviewer. `AnthropicModelClient` is never
+ *              constructed: no Anthropic call, no spend.
+ *   --live     a real `AnthropicModelClient` is constructed and stage 7b falls
+ *              through to the pipeline's real guarantee classifier — TWO model
+ *              calls per fixture. This SPENDS MONEY (P1.10c).
+ *
+ * In BOTH modes the two non-model boundaries stay stubbed, because an eval run
+ * must never touch canonical state:
  *   - the Notion client is a stub whose fetch never reaches the network, so no
- *     page can be written even if a real token is present in the environment;
+ *     page can be written even with a real token in the environment;
  *   - the database is in-process PGlite, discarded when the run ends;
  *     `DATABASE_URL` is never read.
- * P1.10c adds `--live` and swaps the two stubs for real clients.
  *
- * Run from the repo root:
+ * Run from the repo root, in a REAL TERMINAL (see the empty-env-var note on
+ * `stripEmptyAnthropicEnv` below — a Claude Code shell breaks live runs):
+ *
+ *   # free, no credentials, no network:
  *   npx tsx scripts/eval-run.ts --agent fos.enrollment_brief --dry-run
- *   npx tsx scripts/eval-run.ts --agent fos.enrollment_brief --dry-run -n 5 --out ./transcripts
+ *
+ *   # LIVE — costs roughly $0.027 per fixture-run:
+ *    export ANTHROPIC_API_KEY='sk-ant-...'      # leading space keeps it out of shell history
+ *   npx tsx scripts/eval-run.ts --agent fos.enrollment_brief --live -n 1 --out ./transcripts
+ *   unset ANTHROPIC_API_KEY
+ *
+ *   # ...or keep the key in a gitignored .env instead of exporting it:
+ *   npx tsx --env-file=.env scripts/eval-run.ts --agent fos.enrollment_brief --live -n 1
  */
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -23,6 +41,8 @@ import { evalFixtureV2Schema, runTranscriptSchema, type RunTranscript } from "@f
 import type { EventActor } from "@fos/contracts";
 import {
   runAgent,
+  AnthropicModelClient,
+  DEFAULT_MODEL,
   fosEnrollmentBriefAgentDefinition,
   FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
   type ModelClient,
@@ -40,7 +60,7 @@ import {
   createStubNotionClient,
   stubComplianceReviewer,
 } from "../packages/agents/src/testing/eval-harness.js";
-import { artifactVersion } from "@fos/db/schema";
+import { agentRun, artifactVersion } from "@fos/db/schema";
 import { eq } from "drizzle-orm";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -90,11 +110,23 @@ export interface RunEvalSuiteOptions {
   repetitions: number;
   /** When set, transcripts are also written to `<outDir>/<agentKey>.jsonl`. */
   outDir?: string;
-  /** Defaults to a local `StubModelClient` (dry-run, no Anthropic call). A
-   * future live-run slice injects a real `AnthropicModelClient` here instead
-   * of editing this function's body — this stays the ONLY seam; there is no
-   * `--live` flag or way to reach a real client from this CLI in this slice. */
+  /** Defaults to a local `StubModelClient` (no Anthropic call). `--live`
+   * injects a real `AnthropicModelClient` here — this is the ONLY seam; the
+   * loop body below is identical in both modes. */
   modelClient?: ModelClient;
+  /**
+   * When true, stage 7b (semantic compliance review) falls through to the
+   * pipeline's REAL default classifier — a SECOND model call per fixture, and
+   * roughly half the cost of a live run. When false or omitted, the offline
+   * always-allow `stubComplianceReviewer` is injected instead.
+   *
+   * Deliberately a separate switch from `modelClient` rather than being
+   * inferred from it: leaving the stub in place during a live run would make
+   * every transcript report `compliance_review: {blocked:false}` without the
+   * classifier ever having looked at the output — a green result that proves
+   * nothing, and exactly the class of silent gap this harness exists to catch.
+   */
+  useRealComplianceReviewer?: boolean;
 }
 
 /** Maps an agent key to its fixture directory name. */
@@ -153,6 +185,12 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
   const declaredGateKeys = definition.deterministicGates.map((gate) => gate.key);
   const fixtures = loadFixtures(options.agentKey);
   const controlIndex = buildControlIndex(fixtures);
+  // Whether the OUTPUT came from a real model. The pipeline records
+  // DEFAULT_MODEL on the run row regardless of which client it was handed, so
+  // the row alone cannot distinguish a stub run from a live one — and a
+  // transcript that named a real model for stub-generated output would quietly
+  // corrupt the grader's record and any cost accounting built on it.
+  const usedRealModel = options.modelClient !== undefined;
   const modelClient = options.modelClient ?? new StubModelClient();
   const transcripts: RunTranscript[] = [];
 
@@ -202,7 +240,12 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
               db: ctx.db,
               modelClient,
               notionClient,
-              complianceReviewer: stubComplianceReviewer,
+              // Omitting the key entirely (rather than passing undefined) is
+              // what lets the pipeline fall through to its real default
+              // classifier under --live.
+              ...(options.useRealComplianceReviewer
+                ? {}
+                : { complianceReviewer: stubComplianceReviewer }),
             },
             definition,
             bindFixtureInput(fixture.input, seeded),
@@ -212,6 +255,19 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           errorMessage = caught instanceof Error ? caught.message : String(caught);
         }
         const latencyMs = Date.now() - startedAt;
+
+        // The persisted run row carries the model id and token usage the
+        // pipeline recorded (`costJson`). Absent only when `runAgent` threw
+        // before inserting the row (a stage-1 validation failure).
+        const [runRow] = result?.runId
+          ? await ctx.db.select().from(agentRun).where(eq(agentRun.id, result.runId))
+          : [];
+        const runUsage = ((runRow?.costJson ?? null) as {
+          inputTokens?: number;
+          outputTokens?: number;
+        } | null) ?? { inputTokens: 0, outputTokens: 0 };
+        const usageInput = runUsage.inputTokens ?? 0;
+        const usageOutput = runUsage.outputTokens ?? 0;
 
         let artifact: RunTranscript["artifact"] = null;
         if (result?.artifact) {
@@ -252,8 +308,16 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
             : null,
           artifact,
           projection_deferred: result?.projectionDeferred ?? false,
-          model: "stub",
-          usage: { input_tokens: 0, output_tokens: 0 },
+          // Read model + token usage back from the persisted `agent_run` row
+          // rather than hardcoding them. Under --live these are the real model
+          // id and the real token counts; a transcript that reported "stub" and
+          // zero tokens for a run that actually cost money would corrupt both
+          // the grader's record and any cost accounting built on it.
+          model: usedRealModel ? (runRow?.model ?? DEFAULT_MODEL) : "stub",
+          usage: {
+            input_tokens: usageInput,
+            output_tokens: usageOutput,
+          },
           latency_ms: latencyMs,
           error: errorMessage ?? (result?.status === "error" ? (result.reason ?? "error") : null),
         });
@@ -283,23 +347,112 @@ function parseArgs(argv: string[]) {
     repetitions: Number(get("-n") ?? get("--repetitions") ?? "1"),
     outDir: get("--out"),
     dryRun: argv.includes("--dry-run"),
+    live: argv.includes("--live"),
   };
 }
+
+/**
+ * Deletes EMPTY `ANTHROPIC_*` variables from the environment before any client
+ * is constructed, and returns the names it removed.
+ *
+ * Why this exists (lesson L-007, learned twice on this machine): a Claude Code
+ * shell exports `ANTHROPIC_API_KEY=""` and `ANTHROPIC_AUTH_TOKEN=""` as EMPTY
+ * STRINGS. Empty is not unset — the Anthropic SDK reads them straight from
+ * `process.env`, builds an `Authorization: Bearer ` header with no token, and
+ * the resulting local `Illegal header value` is re-wrapped as
+ * `APIConnectionError: Connection error`. That reads like blocked network
+ * egress and is not; the previous diagnosis burned ~6 tool calls chasing a
+ * sandbox red herring while `curl` returned a perfectly healthy 401.
+ *
+ * Deletion is the only fix that works. Passing `undefined` to the constructor
+ * does not help: the SDK falls back to `process.env` and finds the empty string
+ * again.
+ */
+export function stripEmptyAnthropicEnv(): string[] {
+  const stripped: string[] = [];
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("ANTHROPIC_") && process.env[key] === "") {
+      delete process.env[key];
+      stripped.push(key);
+    }
+  }
+  return stripped;
+}
+
+/** Rough per-fixture-run cost at Sonnet 5 introductory pricing ($2/$10 per
+ * MTok through 2026-08-31), across the agent call plus the stage-7b classifier
+ * call. Illustrative — used only for the pre-flight estimate, never for
+ * billing. */
+const ESTIMATED_USD_PER_RUN = 0.027;
 
 const isEntrypoint = process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1]);
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.dryRun) {
+
+  // Fail closed on the command line BEFORE any client is built. Neither flag
+  // is a default: an incomplete command can never spend money by accident,
+  // and passing both is a contradiction rather than a silent precedence rule.
+  if (args.dryRun && args.live) {
+    console.error("eval-run: --dry-run and --live are mutually exclusive. Pick one.");
+    process.exit(2);
+  }
+  if (!args.dryRun && !args.live) {
     console.error(
-      "eval-run: --dry-run is required. P1.10a is dry-run only; --live lands in P1.10c.",
+      "eval-run: one of --dry-run (free, no credentials) or --live (SPENDS MONEY) is required.",
     );
     process.exit(2);
   }
+
+  let modelClient: ModelClient | undefined;
+  if (args.live) {
+    const stripped = stripEmptyAnthropicEnv();
+    if (stripped.length > 0) {
+      console.error(
+        `eval-run: removed ${stripped.length} EMPTY ${stripped.join(", ")} variable(s) from the environment (lesson L-007).\n` +
+          "eval-run: an empty ANTHROPIC_* var makes the SDK send a token-less Bearer header, which surfaces as a\n" +
+          "eval-run: misleading 'APIConnectionError: Connection error'. Removed so the real key is used instead.",
+      );
+    }
+    // Pre-flight: refuse before spending, not after. `AnthropicModelClient`
+    // reads the key by NAME at call time, so a missing key would otherwise
+    // fail on the first fixture, after the DB and fixtures were already set up.
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.error(
+        "eval-run: --live requires a non-empty ANTHROPIC_API_KEY.\n" +
+          "eval-run:   export ANTHROPIC_API_KEY='sk-ant-...'   (leading space keeps it out of shell history)\n" +
+          "eval-run:   ...or: npx tsx --env-file=.env scripts/eval-run.ts ... --live\n" +
+          "eval-run: Run from a REAL terminal — a Claude Code shell exports empty ANTHROPIC_* vars (L-007).",
+      );
+      process.exit(2);
+    }
+    const fixtureCount = Object.keys(FIXTURE_DIR_BY_AGENT).includes(args.agentKey)
+      ? readdirSync(join(FIXTURE_ROOT, FIXTURE_DIR_BY_AGENT[args.agentKey]!)).filter((f) =>
+          f.endsWith(".json"),
+        ).length
+      : 0;
+    const totalRuns = fixtureCount * args.repetitions;
+    console.log(
+      `eval-run: LIVE MODE — ${totalRuns} run(s) (${fixtureCount} fixtures x ${args.repetitions} repetition(s)) ` +
+        `against ${DEFAULT_MODEL}, two model calls each.`,
+    );
+    console.log(
+      `eval-run: estimated cost ~$${(totalRuns * ESTIMATED_USD_PER_RUN).toFixed(2)} (illustrative, not billing).`,
+    );
+    // `fetchImpl` is injected rather than defaulted — the same seam the tests
+    // use to guarantee no hermetic run can reach the network.
+    modelClient = new AnthropicModelClient({ fetchImpl: fetch });
+  }
+
   const transcripts = await runEvalSuite({
     agentKey: args.agentKey,
     repetitions: args.repetitions,
     outDir: args.outDir,
+    modelClient,
+    // Live runs must exercise the REAL stage-7b classifier; leaving the stub
+    // in would report compliance_review: {blocked:false} without the
+    // classifier ever having read the output.
+    useRealComplianceReviewer: args.live,
   });
   const byStatus = transcripts.reduce<Record<string, number>>((acc, t) => {
     acc[t.status] = (acc[t.status] ?? 0) + 1;

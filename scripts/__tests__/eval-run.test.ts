@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runTranscriptSchema } from "@fos/contracts";
-import { runEvalSuite } from "../eval-run.js";
+import { runEvalSuite, stripEmptyAnthropicEnv } from "../eval-run.js";
 
 describe("eval runner (dry-run)", () => {
   it("FOS1-EVALRUN-01: emits one schema-valid transcript per fixture", async () => {
@@ -66,5 +66,41 @@ describe("eval runner (dry-run)", () => {
     // artifact to persist. Without this, an all-`evaluation_failed` run — the
     // exact failure this suite hit during development — reads as green.
     expect(transcripts.some((t) => t.status === "succeeded")).toBe(true);
+  }, 120_000);
+});
+
+describe("P1.10c — live-mode plumbing", () => {
+  it("FOS1-EVALRUN-08: stripEmptyAnthropicEnv removes EMPTY ANTHROPIC_* vars and leaves real ones (L-007)", () => {
+    const saved = { ...process.env };
+    try {
+      process.env.ANTHROPIC_API_KEY = "";
+      process.env.ANTHROPIC_AUTH_TOKEN = "";
+      process.env.ANTHROPIC_REAL_VALUE = "keep-me";
+      process.env.UNRELATED_EMPTY = "";
+
+      const stripped = stripEmptyAnthropicEnv();
+
+      // Empty ANTHROPIC_* vars must be DELETED, not set to undefined: the SDK
+      // reads process.env directly and an empty string produces a token-less
+      // "Authorization: Bearer " header, surfacing as a misleading
+      // APIConnectionError rather than an auth failure.
+      expect(stripped.sort()).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
+      expect("ANTHROPIC_API_KEY" in process.env).toBe(false);
+      expect("ANTHROPIC_AUTH_TOKEN" in process.env).toBe(false);
+      // Non-empty ANTHROPIC_* and empty non-ANTHROPIC vars are untouched.
+      expect(process.env.ANTHROPIC_REAL_VALUE).toBe("keep-me");
+      expect(process.env.UNRELATED_EMPTY).toBe("");
+    } finally {
+      for (const key of Object.keys(process.env)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("FOS1-EVALRUN-09: a run with no injected modelClient reports model 'stub', never a real model id", async () => {
+    const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 1 });
+    // The pipeline stamps DEFAULT_MODEL on the agent_run row regardless of
+    // which client it was handed, so reading the row alone would misattribute
+    // stub-generated output to a real model and corrupt the grader's record.
+    expect(new Set(transcripts.map((t) => t.model))).toEqual(new Set(["stub"]));
   }, 120_000);
 });
