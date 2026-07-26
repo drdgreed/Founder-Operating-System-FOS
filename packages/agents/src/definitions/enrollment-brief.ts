@@ -157,6 +157,27 @@ export type EnrollmentBriefOutput = z.infer<typeof enrollmentBriefOutputSchema>;
 
 // ---- Definition ------------------------------------------------------------
 
+/**
+ * The two closed vocabularies this agent's output must draw from, each defined
+ * ONCE and consumed by BOTH the deterministic gate that enforces it and the
+ * prompt that tells the model about it (P1.10e).
+ *
+ * Defining them once is the point. Lesson P-004 in docs/AGENT_LESSONS.md is
+ * about exactly this failure shape: a list maintained in one place and relied
+ * on in another drifts silently, and a green suite cannot see it. Here the
+ * drift had already happened in the other direction — the gate enforced a
+ * vocabulary the prompt never disclosed, and the first live run blocked 7 of 8
+ * fixtures because the model guessed at it. A single selector makes "what the
+ * model is told" and "what the gate enforces" the same expression.
+ */
+const selectCitableSourceRefs = (input: EnrollmentBriefInput): string[] =>
+  input.evidenceRecords.map((r) => r.sourceRef);
+
+const selectSelectablePathways = (input: EnrollmentBriefInput): string[] => [
+  ...input.availablePathways,
+  ENROLLMENT_BRIEF_UNDETERMINED_PATHWAY,
+];
+
 export const FOS_ENROLLMENT_BRIEF_AGENT_KEY = "fos.enrollment_brief";
 export const FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY = "fos.enrollment_brief";
 
@@ -183,6 +204,12 @@ export const fosEnrollmentBriefAgentDefinition: AgentDefinition<
   ],
   autonomyCeiling: "review",
   featureFlagKey: FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
+  /** Surfaced to the model verbatim in the user turn — see PromptVocabulary.
+   * Both entries reuse the selectors the gates above enforce with. */
+  promptVocabularies: (input) => [
+    { field: "observedFacts[].sourceRef", allowed: selectCitableSourceRefs(input) },
+    { field: "recommendedPathway", allowed: selectSelectablePathways(input) },
+  ],
   deterministicGates: [
     featureModeAllowedGate({
       key: "fos.enrollment_brief.mode-allowed",
@@ -191,12 +218,15 @@ export const fosEnrollmentBriefAgentDefinition: AgentDefinition<
     factsResolveToSourcesGate<EnrollmentBriefInput, EnrollmentBriefOutput>({
       key: "fos.enrollment_brief.facts-resolve-to-sources",
       selectObservedFacts: (output) => output.observedFacts,
-      selectValidSourceRefs: (input) => input.evidenceRecords.map((r) => r.sourceRef),
+      selectValidSourceRefs: selectCitableSourceRefs,
     }),
     recommendedPathwayAvailableGate<EnrollmentBriefInput, EnrollmentBriefOutput>({
       key: "fos.enrollment_brief.recommended-pathway-available",
       selectRecommendedPathway: (output) => output.recommendedPathway,
       selectAvailablePathways: (input) => input.availablePathways,
+      // NOTE: the gate takes availablePathways WITHOUT the sentinel and handles
+      // `undeterminedValue` separately; the prompt vocabulary below therefore
+      // adds the sentinel so the model can actually select it.
       undeterminedValue: ENROLLMENT_BRIEF_UNDETERMINED_PATHWAY,
     }),
   ],
