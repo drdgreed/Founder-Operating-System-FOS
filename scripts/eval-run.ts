@@ -25,7 +25,7 @@
  *   # free, no credentials, no network:
  *   npx tsx scripts/eval-run.ts --agent fos.enrollment_brief --dry-run
  *
- *   # LIVE — costs roughly $0.027 per fixture-run:
+ *   # LIVE — costs roughly $0.05 per fixture-run (agent call + ~15 compliance checks):
  *    export ANTHROPIC_API_KEY='sk-ant-...'      # leading space keeps it out of shell history
  *   npx tsx scripts/eval-run.ts --agent fos.enrollment_brief --live -n 1 --out ./transcripts
  *   unset ANTHROPIC_API_KEY
@@ -379,11 +379,26 @@ export function stripEmptyAnthropicEnv(): string[] {
   return stripped;
 }
 
-/** Rough per-fixture-run cost at Sonnet 5 introductory pricing ($2/$10 per
- * MTok through 2026-08-31), across the agent call plus the stage-7b classifier
- * call. Illustrative — used only for the pre-flight estimate, never for
- * billing. */
-const ESTIMATED_USD_PER_RUN = 0.027;
+/**
+ * Rough per-fixture-run cost at Sonnet 5 introductory pricing ($2/$10 per MTok
+ * through 2026-08-31). Illustrative — used only for the pre-flight estimate,
+ * never for billing.
+ *
+ * CORRECTED: an earlier value of 0.027 assumed TWO model calls per run (the
+ * agent plus one compliance check). Stage 7b actually classifies EVERY distinct
+ * non-empty text the agent rendered — candidateSummary, fitRationale,
+ * nextAction, and each objection, discovery question, observed fact, inference,
+ * risk flag, and unknown. A real enrollment brief yields 12-20 of them.
+ *
+ *   agent call:       ~4k in, ~1.5k out                    ~= $0.023
+ *   ~15 classifier calls: ~500 in / ~100 out each          ~= $0.030
+ *                                                             -------
+ *                                                             ~$0.053
+ *
+ * Gate-blocked runs never reach stage 7b and cost only the agent call, so this
+ * is an upper bound per run rather than a flat rate.
+ */
+const ESTIMATED_USD_PER_RUN = 0.053;
 
 const isEntrypoint = process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1]);
 

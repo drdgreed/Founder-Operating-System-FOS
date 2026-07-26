@@ -14,6 +14,82 @@ import type { AgentDefinition, RunAgentContext, RunAgentDeps } from "./types.js"
 
 export type AgentRunStatus = "succeeded" | "evaluation_failed" | "policy_blocked" | "error";
 
+/**
+ * How many stage-7b compliance-review texts are classified at once by default.
+ * Each text is an independent classification, so reviewing them one at a time
+ * made a successful run's latency the SUM of every classifier call — a real
+ * enrollment brief renders 12-20 reviewable texts, which dominated live-run
+ * wall time. Bounded rather than unbounded so a single run cannot open 20
+ * concurrent model connections and trip a rate limit.
+ */
+export const DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY = 6;
+
+/**
+ * Classifies `texts` with bounded concurrency and returns the blocking reason
+ * from the EARLIEST blocking text in array order, or `null` if every text was
+ * allowed. Throws whatever the earliest failing text threw.
+ *
+ * Three properties the sequential `for`-loop had, preserved deliberately:
+ *
+ *  1. **Fail closed.** Anything that is not an explicit `"allow"` blocks, and
+ *     an exception propagates to the caller's catch rather than falling
+ *     through to allow.
+ *  2. **Deterministic reason.** The sequential loop reported the FIRST
+ *     blocking text. A plain `Promise.all` + "first settled block" would make
+ *     the reported reason depend on network timing, so the same output could
+ *     produce different `deterministic_eval_json` on different runs — which
+ *     would be corrosive in an eval harness whose whole purpose is
+ *     reproducible grading. Outcomes are collected BY INDEX and scanned from 0.
+ *  3. **Most of the early exit.** `break` meant a blocked run stopped paying
+ *     for later texts. Workers here stop claiming new indices once any index
+ *     has come back non-allow, so texts after the blocker are never launched.
+ *     Texts BEFORE it are already in flight and are allowed to finish, which is
+ *     precisely what makes property 2 hold.
+ */
+async function reviewTextsConcurrently(
+  texts: readonly string[],
+  reviewer: (text: string) => Promise<{ verdict: string; reason: string }>,
+  concurrency: number,
+): Promise<string | null> {
+  type Outcome =
+    { kind: "allow" } | { kind: "block"; reason: string } | { kind: "error"; err: unknown };
+  const outcomes = new Array<Outcome | undefined>(texts.length);
+  let nextIndex = 0;
+  /** Lowest index known to be non-allow; workers stop claiming past it. */
+  let stopAfter = Number.POSITIVE_INFINITY;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = nextIndex;
+      if (index >= texts.length || index > stopAfter) return;
+      nextIndex += 1;
+      try {
+        const decision = await reviewer(texts[index]!);
+        if (decision.verdict === "allow") {
+          outcomes[index] = { kind: "allow" };
+        } else {
+          outcomes[index] = { kind: "block", reason: decision.reason };
+          stopAfter = Math.min(stopAfter, index);
+        }
+      } catch (err) {
+        outcomes[index] = { kind: "error", err };
+        stopAfter = Math.min(stopAfter, index);
+      }
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(concurrency, texts.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  for (let index = 0; index < texts.length; index += 1) {
+    const outcome = outcomes[index];
+    if (outcome === undefined || outcome.kind === "allow") continue;
+    if (outcome.kind === "error") throw outcome.err;
+    return outcome.reason;
+  }
+  return null;
+}
+
 export interface RunAgentResult {
   runId: string;
   status: AgentRunStatus;
@@ -347,16 +423,11 @@ export async function runAgent<TInput, TOutput>(
         const texts = [
           ...new Set(definition.complianceReviewText(output).filter((t) => t.trim().length > 0)),
         ];
-        for (const text of texts) {
-          const decision = await reviewer(text);
-          // Fail CLOSED: block on anything that is not an explicit "allow"
-          // (symmetric with the classifier's own fail-closed stance — a custom
-          // reviewer returning a malformed verdict must never fall through to allow).
-          if (decision.verdict !== "allow") {
-            complianceBlockReason = decision.reason;
-            break;
-          }
-        }
+        complianceBlockReason = await reviewTextsConcurrently(
+          texts,
+          reviewer,
+          deps.complianceReviewConcurrency ?? DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY,
+        );
       } catch (err) {
         // Fail closed: an exception in the review must never bypass it.
         const message = err instanceof Error ? err.message : String(err);
