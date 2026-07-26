@@ -5,6 +5,7 @@ import type { CreateArtifactResult, Db } from "@fos/db/services";
 import type { NotionClient } from "@fos/notion";
 import type { Gate } from "./gates/gate.js";
 import type { ModelClient } from "./model-client.js";
+import type { PromptVocabulary } from "./prompt.js";
 import type { FeatureMode } from "./mode.js";
 
 /** Who/what triggered a run (stage 1, trigger validation). */
@@ -146,6 +147,19 @@ export interface AgentDefinition<TInput, TOutput> {
    * prompt/input), exactly like a gate (D9).
    */
   complianceReviewText?: (output: TOutput) => ReadonlyArray<string>;
+  /**
+   * Optional closed vocabularies for output fields whose legal values come from
+   * the run's input (P1.10e). Surfaced to the model in the prompt's user turn;
+   * the RULE about copying them verbatim is static policy in the system prompt,
+   * so an input-derived string can never reach the policy channel (D9).
+   *
+   * Each entry MUST be produced by the same selector the corresponding gate
+   * enforces with — see the shared selectors in `definitions/enrollment-brief.ts`.
+   * A vocabulary that drifts from its gate is worse than none: the model would
+   * be confidently told the wrong answer.
+   */
+  promptVocabularies?: (input: TInput) => ReadonlyArray<PromptVocabulary>;
+
   evalPolicy?: EvalPolicy<TInput, TOutput>;
   /** `feature_flag.key` this definition reads at stage 2. */
   featureFlagKey: string;
