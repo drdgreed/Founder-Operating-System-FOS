@@ -1,6 +1,7 @@
 {
   "fixture_id": "enrollment_brief.strong_fit",
   "agent_key": "fos.enrollment_brief",
+  "schema_version": 2,
   "description": "A well-qualified, clearly-articulated applicant with a straightforward pathway match. The baseline 'everything works' case.",
   "input": {
     "opportunity": {
@@ -43,18 +44,17 @@
     "availablePathways": ["standard_track", "accelerated_track"]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.enrollment_brief.mode-allowed": "pass",
       "fos.enrollment_brief.facts-resolve-to-sources": "pass",
-      "fos.enrollment_brief.no-prohibited-guarantee": "pass",
       "fos.enrollment_brief.recommended-pathway-available": "pass"
     },
-    "output_schema_constraints": [
-      "every observedFacts[] entry cites a sourceRef present in evidenceRecords",
-      "fitStatus is strong_fit or possible_fit given the clear role/timeline/experience alignment",
-      "recommendedPathway is one of availablePathways",
-      "no guarantee language anywhere in candidateSummary/fitRationale/nextAction"
-    ]
-  }
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": []
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

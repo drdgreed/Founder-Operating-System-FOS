@@ -8,7 +8,7 @@ export default defineConfig({
         // normal full file-parallelism. Behavior here is unchanged from before.
         test: {
           name: "default",
-          include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+          include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "scripts/**/*.test.ts"],
           // Re-state vitest's default excludes (an explicit `exclude` replaces
           // them) — `**/dist/**` etc. — plus the db partition so a stray built
           // `dist/*.test.ts` can never be picked up here.

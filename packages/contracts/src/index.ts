@@ -179,3 +179,6 @@ export function validateEventPayload(type: string, payload: unknown): void {
   // Other domains are not registered here; they pass through until their slice
   // registers schemas.
 }
+
+export * from "./eval-transcript.js";
+export * from "./eval-fixture.js";

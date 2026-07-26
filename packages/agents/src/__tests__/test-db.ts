@@ -1,141 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { PGlite } from "@electric-sql/pglite";
-import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
-import * as schema from "@fos/db/schema";
-import {
-  fosWorkspace,
-  featureFlag,
-  product,
-  person,
-  enrollmentOpportunity,
-  applicationSubmission,
-  type FeatureFlagMode,
-} from "@fos/db/schema";
+import { product, person, enrollmentOpportunity } from "@fos/db/schema";
 import { createInteraction } from "@fos/db/services";
+import {
+  createEvalDb,
+  seedEvalWorkspace,
+  setEvalFeatureFlag,
+  seedEnrollmentBriefFixture as seedEnrollmentBriefFixtureImpl,
+  type EvalDb,
+} from "../testing/eval-harness.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// packages/agents/src/__tests__ -> packages/db/migrations
-const MIGRATIONS_FOLDER = join(__dirname, "..", "..", "..", "db", "migrations");
-
-/**
- * Hermetic in-process Postgres (PGlite) with every migration applied,
- * including the P1.1 index migration (0013). Mirrors
- * packages/adapter/src/__tests__/test-db.ts / packages/db/.../pglite-db.ts
- * for this package's own tests. NO external Postgres server, NO network.
- */
-export async function createTestDb() {
-  const client = new PGlite();
-  const db = drizzle(client, { schema });
-  await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-  return {
-    db,
-    close: () => client.close(),
-  };
-}
-
-export async function seedWorkspace(db: Awaited<ReturnType<typeof createTestDb>>["db"]) {
-  const [workspace] = await db
-    .insert(fosWorkspace)
-    .values({ name: "Test Workspace", ownerUserId: "founder-1" })
-    .returning();
-  if (!workspace) throw new Error("seedWorkspace: fos_workspace insert returned no row");
-  return workspace;
-}
-
-export async function setFeatureFlag(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
-  input: { workspaceId: string; key: string; enabled: boolean; mode: FeatureFlagMode },
-) {
-  const [row] = await db
-    .insert(featureFlag)
-    .values({
-      workspaceId: input.workspaceId,
-      key: input.key,
-      enabled: input.enabled,
-      mode: input.mode,
-    })
-    .onConflictDoUpdate({
-      target: [featureFlag.workspaceId, featureFlag.key],
-      set: { enabled: input.enabled, mode: input.mode, updatedAt: new Date() },
-    })
-    .returning();
-  if (!row) throw new Error("setFeatureFlag: feature_flag upsert returned no row");
-  return row;
-}
-
-/**
- * Seeds a full EnrollmentOpportunity + Person + ApplicationSubmission chain
- * (mirrors packages/adapter/src/__tests__/test-db.ts's seedOpportunity) for
- * the `fos.enrollment_brief` agent tests, which need real canonical rows to
- * project (stage 11) and to attach an EnrollmentAssessment to (stage 9b).
- */
-export async function seedEnrollmentBriefFixture(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
-) {
-  const workspace = await seedWorkspace(db);
-
-  const [prod] = await db
-    .insert(product)
-    .values({
-      workspaceId: workspace.id,
-      productKey: "career-foundry",
-      name: "Career Foundry",
-      productType: "product",
-      parentProductId: null,
-    })
-    .returning();
-  if (!prod) throw new Error("seedEnrollmentBriefFixture: product insert returned no row");
-
-  const [personRow] = await db
-    .insert(person)
-    .values({
-      workspaceId: workspace.id,
-      firstName: "Ada",
-      lastName: "Lovelace",
-      currentRole: "Data Analyst",
-      currentCompany: "Acme Corp",
-      location: "Remote",
-      source: "website_application",
-      lifecycleType: "applicant",
-    })
-    .returning();
-  if (!personRow) throw new Error("seedEnrollmentBriefFixture: person insert returned no row");
-
-  const [opportunity] = await db
-    .insert(enrollmentOpportunity)
-    .values({
-      workspaceId: workspace.id,
-      productId: prod.id,
-      personId: personRow.id,
-      stage: "reviewing",
-      currency: "USD",
-      version: 1,
-    })
-    .returning();
-  if (!opportunity)
-    throw new Error("seedEnrollmentBriefFixture: enrollment_opportunity insert returned no row");
-
-  const [application] = await db
-    .insert(applicationSubmission)
-    .values({
-      workspaceId: workspace.id,
-      productId: prod.id,
-      personId: personRow.id,
-      opportunityId: opportunity.id,
-      formVersion: "v1",
-      rawPayloadJson: { note: "seeded fixture" },
-      sourceReference: "website_application",
-      intakeIdempotencyKey: `seed-${opportunity.id}`,
-    })
-    .returning();
-  if (!application)
-    throw new Error("seedEnrollmentBriefFixture: application_submission insert returned no row");
-
-  return { workspace, product: prod, person: personRow, opportunity, application };
-}
+/** Re-exported from ../testing/eval-harness.ts, which is importable outside
+ * __tests__/ so `scripts/eval-run.ts` can use the same substrate (P1.10a).
+ * The names here are unchanged so the eleven existing agent test files that
+ * import from this module keep working untouched. */
+export const createTestDb = createEvalDb;
+export const seedWorkspace = seedEvalWorkspace;
+export const setFeatureFlag = setEvalFeatureFlag;
+export const seedEnrollmentBriefFixture = seedEnrollmentBriefFixtureImpl;
 
 /**
  * Seeds an EnrollmentOpportunity + Person chain plus a scheduled Interaction
@@ -149,7 +30,7 @@ export async function seedEnrollmentBriefFixture(
  * distinct from the cross-workspace check).
  */
 export async function seedCallPreparationFixture(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  db: EvalDb,
   existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
 ) {
   const workspace = existingWorkspace ?? (await seedWorkspace(db));
@@ -223,7 +104,7 @@ export async function seedCallPreparationFixture(
  * "interaction belongs to a different opportunity" check.
  */
 export async function seedPostCallSynthesisFixture(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  db: EvalDb,
   existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
 ) {
   const workspace = existingWorkspace ?? (await seedWorkspace(db));
@@ -292,7 +173,7 @@ export async function seedPostCallSynthesisFixture(
  * "interaction belongs to a different opportunity" check.
  */
 export async function seedObjectionIntelligenceFixture(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  db: EvalDb,
   existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
 ) {
   const workspace = existingWorkspace ?? (await seedWorkspace(db));
@@ -367,7 +248,7 @@ export async function seedObjectionIntelligenceFixture(
  * the other fixtures: exercising the cross-workspace ownership check.
  */
 export async function seedNextBestActionFixture(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  db: EvalDb,
   existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
 ) {
   const workspace = existingWorkspace ?? (await seedWorkspace(db));
@@ -428,7 +309,7 @@ export async function seedNextBestActionFixture(
  * the other fixtures: exercising the cross-workspace ownership check.
  */
 export async function seedPersonalizedFollowUpFixture(
-  db: Awaited<ReturnType<typeof createTestDb>>["db"],
+  db: EvalDb,
   existingWorkspace?: Awaited<ReturnType<typeof seedWorkspace>>,
 ) {
   const workspace = existingWorkspace ?? (await seedWorkspace(db));

@@ -21,10 +21,14 @@ export interface RunAgentResult {
   retryCount: number;
   artifact?: { artifactId: string; versionId: string };
   gateEvaluations?: GateEvaluation[];
-  /** Set when the stage-7b semantic compliance review ran. `blocked: true`
-   * means the run was terminated `policy_blocked` by the guarantee classifier
-   * (no artifact) — the same terminal outcome as a deterministic gate block,
-   * but produced by the separate semantic stage rather than a gate. */
+  /** Three states, not two: `undefined` means the stage-7b semantic
+   * compliance review never ran (`definition.complianceReviewText` was not
+   * set). `{ blocked: false }` means it ran and allowed. `{ blocked: true,
+   * reason }` means it ran and terminated the run `policy_blocked` by the
+   * guarantee classifier (no artifact) — the same terminal outcome as a
+   * deterministic gate block, but produced by the separate semantic stage
+   * rather than a gate. Collapsing "ran and allowed" into "never ran" would
+   * make the two indistinguishable to any consumer of this result. */
   complianceReview?: { blocked: boolean; reason?: string };
   reason?: string;
   /** True when the run succeeded (canonical committed) but the isolated
@@ -322,6 +326,13 @@ export async function runAgent<TInput, TOutput>(
     // The reviewer is an INJECTABLE pipeline dep (`deps.complianceReviewer`),
     // DEFAULTING to the classifier wired to `deps.modelClient` — tests stub it
     // WITHOUT scripting classifier calls through the generation FakeModelClient.
+    // Local three-state holder (issue: distinguishing "stage ran and allowed"
+    // from "stage never ran" — both previously collapsed to `undefined`).
+    // Stays `undefined` when this whole `if` is skipped (no complianceReviewText);
+    // set to `{ blocked: false }` below once the stage runs to completion
+    // without blocking; set to `{ blocked: true, reason }` when it blocks.
+    let complianceReview: { blocked: boolean; reason?: string } | undefined;
+
     if (definition.complianceReviewText) {
       const reviewer =
         deps.complianceReviewer ??
@@ -395,6 +406,10 @@ export async function runAgent<TInput, TOutput>(
           reason: complianceBlockReason,
         };
       }
+
+      // Stage ran to completion (all texts, or none present after the
+      // filter/dedupe) without blocking — distinct from "never ran".
+      complianceReview = { blocked: false };
     }
 
     // ---- Stage 8: optional secondary quality eval (advisory only) -----
@@ -524,6 +539,7 @@ export async function runAgent<TInput, TOutput>(
       retryCount,
       artifact: { artifactId: artifactResult.artifactId, versionId: artifactResult.versionId },
       gateEvaluations: gateOutcome.evaluations,
+      complianceReview,
       projectionDeferred,
     };
   } catch (err) {
