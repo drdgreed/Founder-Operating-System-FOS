@@ -73,4 +73,13 @@ describe("evalFixtureV2Schema", () => {
     });
     expect(parsed.expected.paired_control).toBe("enrollment_brief.strong_fit_control");
   });
+
+  it("FOS1-EVALFX-07: rejects an empty gate_outcomes map — it would grade green while checking nothing", () => {
+    expect(() =>
+      evalFixtureV2Schema.parse({
+        ...VALID,
+        expected: { ...VALID.expected, gate_outcomes: {} },
+      }),
+    ).toThrow();
+  });
 });

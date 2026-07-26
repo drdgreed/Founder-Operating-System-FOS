@@ -16,7 +16,7 @@
  *   npx tsx scripts/eval-run.ts --agent fos.enrollment_brief --dry-run -n 5 --out ./transcripts
  */
 
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { evalFixtureV2Schema, runTranscriptSchema, type RunTranscript } from "@fos/contracts";
@@ -90,6 +90,11 @@ export interface RunEvalSuiteOptions {
   repetitions: number;
   /** When set, transcripts are also written to `<outDir>/<agentKey>.jsonl`. */
   outDir?: string;
+  /** Defaults to a local `StubModelClient` (dry-run, no Anthropic call). A
+   * future live-run slice injects a real `AnthropicModelClient` here instead
+   * of editing this function's body — this stays the ONLY seam; there is no
+   * `--live` flag or way to reach a real client from this CLI in this slice. */
+  modelClient?: ModelClient;
 }
 
 /** Maps an agent key to its fixture directory name. */
@@ -148,12 +153,29 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
   const declaredGateKeys = definition.deterministicGates.map((gate) => gate.key);
   const fixtures = loadFixtures(options.agentKey);
   const controlIndex = buildControlIndex(fixtures);
+  const modelClient = options.modelClient ?? new StubModelClient();
   const transcripts: RunTranscript[] = [];
+
+  // Durability (one bad transcript must not discard every transcript already
+  // produced): create the output file up front and APPEND each transcript as
+  // it is parsed, rather than writing once after both loops finish. A throw
+  // partway through (most plausibly `runTranscriptSchema.parse`) still loses
+  // its own transcript, but every prior one is already durably on disk.
+  const outPath = options.outDir ? join(options.outDir, `${options.agentKey}.jsonl`) : undefined;
+  if (options.outDir && outPath) {
+    mkdirSync(options.outDir, { recursive: true });
+    writeFileSync(outPath, "", "utf8");
+  }
 
   for (let repetition = 0; repetition < options.repetitions; repetition += 1) {
     for (const fixture of fixtures) {
       // A FRESH database per run: no run may observe another run's rows.
       const ctx = await createEvalDb();
+      // A caller's own FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID must survive this
+      // run: save whatever was there (including "nothing") before overwriting
+      // it below, and restore exactly that in `finally`. Declared outside the
+      // `try` so the `finally` block (its own scope) can still see it.
+      const priorNotionDataSourceId = process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID;
       try {
         const seeded = await seedEnrollmentBriefFixture(ctx.db);
         await setEvalFeatureFlag(ctx.db, {
@@ -178,7 +200,7 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           result = await runAgent(
             {
               db: ctx.db,
-              modelClient: new StubModelClient(),
+              modelClient,
               notionClient,
               complianceReviewer: stubComplianceReviewer,
             },
@@ -204,53 +226,48 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           };
         }
 
-        transcripts.push(
-          runTranscriptSchema.parse({
-            fixture_id: fixture.fixture_id,
-            agent_key: definition.key,
-            agent_version: definition.version,
-            repetition,
-            control_for: controlIndex.get(fixture.fixture_id) ?? null,
-            run_id: result?.runId ?? "00000000-0000-4000-8000-000000000000",
-            status: result?.status ?? "error",
-            mode: result?.mode ?? "shadow",
-            retry_count: result?.retryCount ?? 0,
-            declared_gate_keys: declaredGateKeys,
-            gate_evaluations: (result?.gateEvaluations ?? []).map((evaluation) => ({
-              key: evaluation.key,
-              allowed: evaluation.allowed,
-              ...(evaluation.reason === undefined ? {} : { reason: evaluation.reason }),
-            })),
-            compliance_review: result?.complianceReview
-              ? {
-                  blocked: result.complianceReview.blocked,
-                  ...(result.complianceReview.reason === undefined
-                    ? {}
-                    : { reason: result.complianceReview.reason }),
-                }
-              : null,
-            artifact,
-            projection_deferred: result?.projectionDeferred ?? false,
-            model: "stub",
-            usage: { input_tokens: 0, output_tokens: 0 },
-            latency_ms: latencyMs,
-            error: errorMessage ?? (result?.status === "error" ? (result.reason ?? "error") : null),
-          }),
-        );
+        const transcript = runTranscriptSchema.parse({
+          fixture_id: fixture.fixture_id,
+          agent_key: definition.key,
+          agent_version: definition.version,
+          repetition,
+          control_for: controlIndex.get(fixture.fixture_id) ?? null,
+          run_id: result?.runId ?? "00000000-0000-4000-8000-000000000000",
+          status: result?.status ?? "error",
+          mode: result?.mode ?? "shadow",
+          retry_count: result?.retryCount ?? 0,
+          declared_gate_keys: declaredGateKeys,
+          gate_evaluations: (result?.gateEvaluations ?? []).map((evaluation) => ({
+            key: evaluation.key,
+            allowed: evaluation.allowed,
+            ...(evaluation.reason === undefined ? {} : { reason: evaluation.reason }),
+          })),
+          compliance_review: result?.complianceReview
+            ? {
+                blocked: result.complianceReview.blocked,
+                ...(result.complianceReview.reason === undefined
+                  ? {}
+                  : { reason: result.complianceReview.reason }),
+              }
+            : null,
+          artifact,
+          projection_deferred: result?.projectionDeferred ?? false,
+          model: "stub",
+          usage: { input_tokens: 0, output_tokens: 0 },
+          latency_ms: latencyMs,
+          error: errorMessage ?? (result?.status === "error" ? (result.reason ?? "error") : null),
+        });
+        transcripts.push(transcript);
+        if (outPath) appendFileSync(outPath, JSON.stringify(transcript) + "\n", "utf8");
       } finally {
-        delete process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID;
+        if (priorNotionDataSourceId === undefined) {
+          delete process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID;
+        } else {
+          process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID = priorNotionDataSourceId;
+        }
         await ctx.close();
       }
     }
-  }
-
-  if (options.outDir) {
-    mkdirSync(options.outDir, { recursive: true });
-    writeFileSync(
-      join(options.outDir, `${options.agentKey}.jsonl`),
-      transcripts.map((t) => JSON.stringify(t)).join("\n") + "\n",
-      "utf8",
-    );
   }
 
   return transcripts;

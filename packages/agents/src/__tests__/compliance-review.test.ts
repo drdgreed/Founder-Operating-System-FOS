@@ -146,7 +146,11 @@ describe("stage-7b semantic compliance review (issue #109)", () => {
 
     expect(result.status).toBe("succeeded");
     expect(result.artifact).toBeDefined();
-    expect(result.complianceReview).toBeUndefined();
+    // Stage 7b RAN (complianceReviewText is set on this definition) and
+    // allowed — distinct from "never ran" (FOS1-CR-05), which stays
+    // `undefined`. This is a strengthening of the prior (conflated)
+    // `toBeUndefined()` assertion, not a weakening.
+    expect(result.complianceReview).toEqual({ blocked: false });
     const [version] = await ctx.db
       .select()
       .from(artifactVersion)
@@ -279,5 +283,57 @@ describe("stage-7b semantic compliance review (issue #109)", () => {
     expect(result.status).toBe("policy_blocked");
     expect(result.complianceReview?.blocked).toBe(true);
     expect(await ctx.db.select().from(artifactRecord)).toHaveLength(0);
+  });
+
+  it("FOS1-CR-08: the three complianceReview states (never ran / ran+allowed / ran+blocked) are distinguishable", async () => {
+    const { runContext: neverRanCtx } = await setup("review", CR_NOREVIEW_FLAG);
+    const neverRan = await runAgent(
+      {
+        db: ctx.db,
+        modelClient: new FakeModelClient([validResult({ message: "anything" })]),
+        complianceReviewer: allowAllReviewer,
+      },
+      crNoReviewDefinition,
+      { note: "x" },
+      neverRanCtx,
+    );
+    expect(neverRan.status).toBe("succeeded");
+    expect(neverRan.complianceReview).toBeUndefined();
+
+    const { runContext: allowedCtx } = await setup("review");
+    const ranAllowed = await runAgent(
+      {
+        db: ctx.db,
+        modelClient: new FakeModelClient([validResult({ message: "benign copy" })]),
+        complianceReviewer: allowAllReviewer,
+      },
+      crTestDefinition,
+      { note: "x" },
+      allowedCtx,
+    );
+    expect(ranAllowed.status).toBe("succeeded");
+    expect(ranAllowed.complianceReview).toEqual({ blocked: false });
+
+    const { runContext: blockedCtx } = await setup("review");
+    const ranBlocked = await runAgent(
+      {
+        db: ctx.db,
+        modelClient: new FakeModelClient([validResult({ message: "we guarantee you a job" })]),
+        complianceReviewer: blockAllReviewer,
+      },
+      crTestDefinition,
+      { note: "x" },
+      blockedCtx,
+    );
+    expect(ranBlocked.status).toBe("policy_blocked");
+    expect(ranBlocked.complianceReview).toEqual({ blocked: true, reason: "test stub: block" });
+
+    // All three are pairwise distinct — none has collapsed into another.
+    const states = [
+      neverRan.complianceReview,
+      ranAllowed.complianceReview,
+      ranBlocked.complianceReview,
+    ];
+    expect(new Set(states.map((s) => JSON.stringify(s))).size).toBe(3);
   });
 });

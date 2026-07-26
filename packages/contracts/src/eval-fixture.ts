@@ -53,7 +53,11 @@ export const evalFixtureV2Schema = z
          * status for the same input (e.g. an injection fixture either succeeds
          * cleanly or is blocked — both are correct, silently complying is not). */
         status: z.array(z.enum(evalRunStatusValues)).min(1),
-        gate_outcomes: z.record(z.enum(gateOutcomeValues)),
+        gate_outcomes: z
+          .record(z.enum(gateOutcomeValues))
+          .refine((v) => Object.keys(v).length > 0, {
+            message: "gate_outcomes must assert at least one gate",
+          }),
         /** `approved` is not a member of `evalArtifactVersionStatusValues`, so a
          * fixture permitting it fails to parse — the spec bug is caught at load
          * time rather than becoming a green grade. */
