@@ -231,3 +231,62 @@ describe("FOS1-GCLS prompt encodes the policy", () => {
     expect(result.verdict).toBe("block");
   });
 });
+
+describe("classifier scope (P1.10f — driven by the second live run)", () => {
+  // The second live model run reached stage 7b for the first time ever and the
+  // classifier blocked 8 of 8 enrollment briefs while explicitly stating there
+  // was nothing prohibited in them — e.g. "The copy contains no discernible
+  // claim about employment outcomes or readiness at all, so there is nothing
+  // prohibited, but its vagueness warrants low confidence." A 100% false
+  // positive rate on legitimate internal output.
+  //
+  // Root cause: the prompt scoped itself to "student-facing marketing or
+  // coaching copy", so an internal analytical note was out of distribution.
+  // The classifier answered honestly ("out of scope"), returned a
+  // low-confidence allow, and the fail-closed wrapper converted that to block.
+
+  it("FOS1-GCLS-scope-01: the prompt admits internal analytical text, not just marketing copy", () => {
+    const p = GUARANTEE_CLASSIFIER_SYSTEM_PROMPT;
+    expect(p).toContain("INTERNAL, ANALYTICAL text");
+    expect(p).toContain("enrollment-assessment note");
+    // The old wording is what put analytical text out of distribution.
+    expect(p).not.toContain("one piece of student-facing marketing or coaching copy");
+  });
+
+  it("FOS1-GCLS-scope-02: the prompt states genre is irrelevant to the verdict", () => {
+    expect(GUARANTEE_CLASSIFIER_SYSTEM_PROMPT).toContain("GENRE IS IRRELEVANT TO YOUR VERDICT");
+  });
+
+  it("FOS1-GCLS-scope-03: absence of guarantee language is instructed to be a CONFIDENT allow", () => {
+    const p = GUARANTEE_CLASSIFIER_SYSTEM_PROMPT;
+    expect(p).toContain("NO guarantee language at all, that is a CONFIDENT");
+    // Out-of-genre must be explicitly ruled out as a reason to lower confidence
+    // — that inference is exactly what produced the false positives.
+    expect(p).toContain("Do NOT lower your confidence because the text is out of the genre");
+  });
+
+  it("FOS1-GCLS-scope-04: the POLICY boundary is unchanged — readiness allowed, employment prohibited", () => {
+    const p = GUARANTEE_CLASSIFIER_SYSTEM_PROMPT;
+    // This is the load-bearing compliance contract. Widening the input domain
+    // must not have touched WHAT counts as a prohibited guarantee.
+    expect(p).toContain("MAY guarantee READINESS / PREPARATION — outcomes the PROGRAM controls");
+    expect(p).toContain("MAY NOT guarantee EMPLOYMENT OUTCOMES");
+    expect(p).toContain("interview-READY");
+  });
+
+  it("FOS1-GCLS-scope-05: REGRESSION GUARD — the fail-closed wrapper is NOT loosened", async () => {
+    // The fix belongs in the classifier's framing, never in the wrapper. A
+    // low-confidence allow must STILL block: that rule is why this classifier
+    // is trusted, and loosening it would trade a false-positive problem for a
+    // false-negative one on a SAFETY-CRITICAL path.
+    const model = {
+      generateStructured: async () => ({
+        output: { verdict: "allow", confidence: "low", reason: "unsure" },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    };
+    const decision = await evaluateGuaranteeText("some benign analytical note", { model });
+    expect(decision.verdict).toBe("block");
+    expect(decision.reason).toContain("low-confidence");
+  });
+});
