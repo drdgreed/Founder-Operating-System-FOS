@@ -98,6 +98,8 @@ interface Row {
 
 interface SetResult {
   recallFailures: Row[];
+  /** Rows whose call threw or timed out — never classified, so not evidence. */
+  unclassified: Row[];
 }
 
 function oneLine(text: string): string {
@@ -142,9 +144,32 @@ async function runSet(
   const precision = tp + fp === 0 ? 1 : tp / (tp + fp);
   const recall = tp + fn === 0 ? 1 : tp / (tp + fn);
 
+  // A row whose verdict came from an infrastructure failure — the call threw or
+  // timed out — was never CLASSIFIED. It still blocks (fail-closed is correct),
+  // but it is not evidence about the classifier's judgement.
+  //
+  // This distinction is why the first recall run was dangerously misleading: all
+  // 36 calls errored, everything therefore blocked, and the summary printed
+  // "recall: 100.0%" and "no recall failures" — a total outage scored as a
+  // perfect pass. `TN=0` was the only clue, and it is easy to miss.
+  //
+  // `(low-confidence)` and `(schema-invalid)` are NOT counted here: in both the
+  // model did respond, so they are genuine (if unhelpful) classifications.
+  const unclassified = rows.filter((r) => /fail-closed \((?:error|timeout)\)/.test(r.reason ?? ""));
+
   console.log(`=== ${label} ===`);
   console.log(`size: ${rows.length}  (block=${tp + fn}, allow=${fp + tn})`);
   console.log(`confusion: TP=${tp} FP=${fp} FN=${fn} TN=${tn}`);
+  if (unclassified.length > 0) {
+    console.log(
+      `### ${unclassified.length}/${rows.length} CALLS NEVER CLASSIFIED (threw or timed out) ###`,
+    );
+    console.log("### The precision/recall below are NOT MEANINGFUL for those rows. ###");
+    for (const r of unclassified.slice(0, 3)) {
+      console.log(`  e.g. "${oneLine(r.text)}" — ${r.reason}`);
+    }
+    if (unclassified.length > 3) console.log(`  ...and ${unclassified.length - 3} more`);
+  }
   console.log(`precision: ${(precision * 100).toFixed(1)}%`);
   console.log(`recall:    ${(recall * 100).toFixed(1)}%  (RECALL IS PARAMOUNT)`);
 
@@ -167,10 +192,36 @@ async function runSet(
   }
   console.log("");
 
-  return { recallFailures };
+  return { recallFailures, unclassified };
+}
+
+/**
+ * Deletes EMPTY `ANTHROPIC_*` variables before the client is constructed
+ * (lesson L-007). A Claude Code shell exports `ANTHROPIC_API_KEY=""` and
+ * `ANTHROPIC_AUTH_TOKEN=""` as empty strings; empty is not unset, so the SDK
+ * builds a token-less `Authorization: Bearer ` header and the resulting local
+ * failure surfaces as a misleading connection error. `scripts/eval-run.ts` has
+ * carried this guard since P1.10c — this script did not, which is exactly the
+ * asymmetry that can make one live path work while another fails uniformly.
+ */
+function stripEmptyAnthropicEnv(): string[] {
+  const stripped: string[] = [];
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("ANTHROPIC_") && process.env[key] === "") {
+      delete process.env[key];
+      stripped.push(key);
+    }
+  }
+  return stripped;
 }
 
 async function main(): Promise<void> {
+  const stripped = stripEmptyAnthropicEnv();
+  if (stripped.length > 0) {
+    console.log(
+      `NOTE: removed ${stripped.length} EMPTY ${stripped.join(", ")} var(s) — see L-007.`,
+    );
+  }
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log("ANTHROPIC_API_KEY not set — eval skipped");
     process.exit(0);
@@ -187,6 +238,25 @@ async function main(): Promise<void> {
   );
 
   const totalRecallFailures = clean.recallFailures.length + adversarial.recallFailures.length;
+  const totalUnclassified = clean.unclassified.length + adversarial.unclassified.length;
+
+  // An INVALID run must never be reportable as a pass. When calls never
+  // returned, every row fails closed to "block", which scores as perfect
+  // recall — the exact way a total outage previously printed
+  // "OVERALL: no recall failures across either set." and exited 0.
+  if (totalUnclassified > 0) {
+    console.log(
+      `OVERALL: INVALID — ${totalUnclassified} call(s) never classified (threw or timed out).`,
+    );
+    console.log(
+      "OVERALL: this run says NOTHING about recall. Everything fails closed to a block, which",
+    );
+    console.log(
+      "OVERALL: scores as 100% recall. Fix the cause (the reason string now carries it) and re-run.",
+    );
+    process.exit(2);
+  }
+
   if (totalRecallFailures > 0) {
     console.log(`OVERALL: ${totalRecallFailures} recall failure(s) — HARD FAIL.`);
   } else {
