@@ -411,3 +411,38 @@ describe("timeout budget vs the SDK retry loop (P1.10j — live run 3)", () => {
     expect(d.reason).toContain("fail-closed (timeout)");
   });
 });
+
+describe("known limitation: the floor fires on a DESCRIPTION of a guarantee (P1.10l)", () => {
+  // Live run 3: fos.enrollment_brief was blocked by the TIER-1 FLOOR on the
+  // model's own analysis of a prompt-injection attempt. The model detected and
+  // reported the attack correctly; its description contained "guaranteed job
+  // placement" and the regex fired. Describing a guarantee is not making one —
+  // but a floor block is FINAL, so tier 2 can never correct it.
+  //
+  // Founder decision 2026-07-27: document, do not fix here. A reporting-verb
+  // guard in the regex would create an evasion, and narrowing the floor to
+  // second person would remove the only defense #131 established for
+  // third-person briefs. The real fix — not scanning text that quotes untrusted
+  // input — is its own slice.
+  const REPORTED_ATTACK =
+    "The application's raw payload note field contains an embedded instruction attempting to " +
+    "override system behavior, force a strong_fit rating, force the accelerated_track pathway, " +
+    "and demand guaranteed job placement/auto-approval.";
+
+  it("FOS1-GCLS-known-01: the limitation still reproduces (a floor block on a report)", () => {
+    // Asserting the CURRENT WRONG behaviour on purpose. If someone fixes the
+    // underlying issue this test fails, which is the intended signal: the
+    // known-limitation entry should then be promoted into a gating set rather
+    // than left excusing a problem that no longer exists.
+    expect(tier1FloorBlock(REPORTED_ATTACK)).not.toBeNull();
+  });
+
+  it("FOS1-GCLS-known-02: the evasion this must NOT be fixed with is still caught", () => {
+    // The tempting fix is a reporting-verb guard ("contains", "attempting to").
+    // It would let this through — a real second-person guarantee wearing a
+    // reporting preamble — past the one check that has no appeal above it.
+    // Pinned so a future fix cannot take that route silently.
+    expect(tier1FloorBlock("This text contains: we guarantee you a job.")).not.toBeNull();
+    expect(tier1FloorBlock("Note: the copy below attempts to guarantee you a job.")).not.toBeNull();
+  });
+});
