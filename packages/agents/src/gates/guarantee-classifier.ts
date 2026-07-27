@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ModelClient, ModelUsage } from "../model-client.js";
-import { DEFAULT_MODEL } from "../model-client.js";
+import { DEFAULT_MODEL, ANTHROPIC_CLASSIFIER_TIMEOUT_MS } from "../model-client.js";
 import { zodToJsonSchema } from "../schema-to-json.js";
 
 // ===========================================================================
@@ -90,8 +90,12 @@ export interface GuaranteeClassifierDeps {
  * the fan-out never happened and the two settings were never exercised
  * together. Concurrent calls make 429s — and therefore retries — more likely.
  *
- *   ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS (12s) x (ANTHROPIC_MAX_RETRIES + 1 = 3)
+ *   ANTHROPIC_CLASSIFIER_TIMEOUT_MS (12s) x (ANTHROPIC_MAX_RETRIES + 1 = 3)
  *     = 36s of attempts, plus SDK backoff between them.
+ *
+ * That per-attempt value is passed PER CALL by this gate, not configured on the
+ * shared client. It is sized for a ~200-token verdict and would starve a 4096-
+ * token generation call — which is what it did in live run 4 when it was global.
  *
  * 45s leaves headroom over that without letting a genuinely hung call stall a
  * run indefinitely. Fail-closed on expiry is unchanged.
@@ -334,6 +338,10 @@ export async function classifyGuarantee(
         userContent: buildClassifierUserContent(text, nonce),
         outputJsonSchema: CLASSIFIER_OUTPUT_JSON_SCHEMA,
         model: modelName,
+        // Short per-attempt budget: this reply is a ~200-token verdict, and
+        // 12-20 of these fan out per run. Generation calls keep the generous
+        // default — see ANTHROPIC_GENERATION_TIMEOUT_MS.
+        perAttemptTimeoutMs: ANTHROPIC_CLASSIFIER_TIMEOUT_MS,
       }),
       timeoutMs,
     );

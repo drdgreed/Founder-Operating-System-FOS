@@ -11,9 +11,33 @@ export const DEFAULT_MODEL = "claude-sonnet-5";
  */
 export const ANTHROPIC_MAX_RETRIES = 2;
 
-/** Per-ATTEMPT timeout. Total wall clock is bounded by roughly
- * `ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1)` plus backoff. */
-export const ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS = 12_000;
+/**
+ * Per-ATTEMPT timeout for a GENERATION call — an agent emitting a full
+ * structured artifact, up to `max_tokens` 4096.
+ *
+ * This is the DEFAULT because it is the SAFE direction. P1.10j set a single
+ * global per-attempt timeout of 12s, sized for the classifier's ~200-token
+ * replies, on a client that also makes generation calls. Live run 4 then failed
+ * 7 of 8 briefs at stage 5 with "Request timed out" at ~37s — exactly
+ * 12s x (2 retries + 1) — having produced nothing at all. The one survivor
+ * emitted 1014 output tokens and took 61s end to end.
+ *
+ * A caller that forgets to specify now gets a generous budget (works, possibly
+ * slow) instead of a too-tight one (fails having produced nothing).
+ */
+export const ANTHROPIC_GENERATION_TIMEOUT_MS = 120_000;
+
+/**
+ * Per-ATTEMPT timeout for a CLASSIFIER call — a short verdict, ~200 output
+ * tokens. Deliberately much smaller: the guarantee classifier fans out 12-20 of
+ * these per run and fails closed on expiry, so a hung call must surrender
+ * quickly rather than stall a whole review.
+ *
+ * Total wall clock for one classification is bounded by roughly
+ * `ANTHROPIC_CLASSIFIER_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1)` plus backoff,
+ * which is what `GUARANTEE_CLASSIFIER_TIMEOUT_MS` is sized to exceed.
+ */
+export const ANTHROPIC_CLASSIFIER_TIMEOUT_MS = 12_000;
 
 export interface GenerateStructuredInput {
   systemPrompt: string;
@@ -21,6 +45,18 @@ export interface GenerateStructuredInput {
   /** JSON Schema the structured output must satisfy. */
   outputJsonSchema: Record<string, unknown>;
   model: string;
+  /**
+   * Per-ATTEMPT timeout for THIS call. Defaults to
+   * `ANTHROPIC_GENERATION_TIMEOUT_MS`.
+   *
+   * Per call site rather than per client, because one client serves two very
+   * different workloads: a generation call emits a full artifact (up to 4096
+   * tokens, tens of seconds) while a classifier call emits a short verdict. A
+   * single global value cannot serve both — sizing it for the classifier kills
+   * generation, and sizing it for generation lets a hung classifier stall a
+   * fan-out.
+   */
+  perAttemptTimeoutMs?: number;
 }
 
 export interface ModelUsage {
@@ -117,7 +153,7 @@ export class AnthropicModelClient implements ModelClient {
       // guessing. See DEFAULT_TIMEOUT_MS in gates/guarantee-classifier.ts for
       // the arithmetic.
       maxRetries: ANTHROPIC_MAX_RETRIES,
-      timeout: ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS,
+      timeout: input.perAttemptTimeoutMs ?? ANTHROPIC_GENERATION_TIMEOUT_MS,
     });
 
     const response = await client.messages.create({
