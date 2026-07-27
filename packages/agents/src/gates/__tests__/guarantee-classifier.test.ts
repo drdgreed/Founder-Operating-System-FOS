@@ -5,6 +5,7 @@ import {
   tier1FloorBlock,
   GUARANTEE_CLASSIFIER_SYSTEM_PROMPT,
 } from "../guarantee-classifier.js";
+import { GUARANTEE_CORPUS } from "./guarantee-corpus.js";
 import type { GuaranteeClassifierDeps } from "../guarantee-classifier.js";
 import { FakeModelClient, validResult } from "../../__tests__/fake-model-client.js";
 import type { ModelClient } from "../../model-client.js";
@@ -336,5 +337,37 @@ describe("fail-closed diagnostics (P1.10h — the misleading recall run)", () =>
     expect(d.reason).toContain("low-confidence");
     expect(d.reason).not.toContain("fail-closed (error)");
     expect(d.reason).not.toContain("fail-closed (timeout)");
+  });
+});
+
+describe("corpus: internal analytical text (P1.10i)", () => {
+  const analytical = GUARANTEE_CORPUS.filter((e) => e.note?.startsWith("analytical"));
+  const analyticalAllow = analytical.filter((e) => e.expected === "allow");
+  const analyticalBlock = analytical.filter((e) => e.expected === "block");
+
+  it("FOS1-GCLS-corpus-01: the corpus now samples internal analytical text at all", () => {
+    // The corpus that gates the classifier contained only marketing/coaching
+    // copy, so the P1.10f recall eval could pass while saying nothing about the
+    // domain the change was written for.
+    expect(analyticalAllow.length).toBeGreaterThanOrEqual(6);
+    expect(analyticalBlock.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("FOS1-GCLS-corpus-02: no analytical ALLOW row trips the tier-1 floor", () => {
+    // A floor block is FINAL — there is no appeal above it. If ordinary brief
+    // content floored, no amount of tier-2 work could unblock it.
+    const floored = analyticalAllow.filter((e) => tier1FloorBlock(e.text) !== null);
+    expect(floored.map((e) => e.text)).toEqual([]);
+  });
+
+  it("FOS1-GCLS-corpus-03: every analytical BLOCK row ESCAPES the floor — tier 2 is the only defense", () => {
+    // Every tier-1 pattern requires a literal "you". Analytical text is written
+    // in the third person ABOUT an applicant, so the floor is structurally
+    // blind to a guarantee phrased that way. These rows exist precisely to
+    // measure tier 2 where nothing else can help — mirroring the adversarial
+    // SET 2. If one of them started tripping the floor it would silently stop
+    // testing what it was added to test.
+    const floored = analyticalBlock.filter((e) => tier1FloorBlock(e.text) !== null);
+    expect(floored.map((e) => e.text)).toEqual([]);
   });
 });
