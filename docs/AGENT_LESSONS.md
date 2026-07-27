@@ -51,3 +51,23 @@ Cross-project process lessons (general git/validation discipline) live in `~/tas
 **Rule:** for every agent with a `noProhibitedGuaranteeGate`, treat the scan list as a **mechanical enumeration of `buildBodyMarkdown`**: list every value it renders, classify each as exactly one of (i) input-derived (not model output), (ii) a closed Zod enum, (iii) gate-validated against a set, or (iv) scanned by `selectText`. If a rendered model-authored value is none of (i)-(iv), it is a leak — scan it or don't render it. Re-run this enumeration on **any** change to `buildBodyMarkdown`, the output schema, OR a gate's coverage (a fix counts). Prefer structural constraints (`.datetime()`, enums, deriving from a closed enum) over relying on the scan. Never trust a "these are the only free-text fields" comment — regenerate the classification. A guarantee-in-`<field>` test is not optional coverage; add one per scanned field.
 
 **Provenance:** PRs #74 (`sourceRef`), #79 (`recommendedDueAt`, then `channel`), 2026-07-20/21. The #79 3-layer gate found two; its fix re-verify caught a third that the fix had introduced; a second re-verify with a forced exhaustive `buildBodyMarkdown`↔`selectText` enumeration confirmed complete coverage. Each leak was structurally invisible to a green suite.
+
+---
+
+## P-005 · One tuning constant, two call sites with OPPOSITE requirements — and a constants-only test that cannot see it
+
+**Symptom:** Live run 4 failed **7 of 8** briefs at stage 5 with `"Request timed out."`, `gates=0`, `tok=0/0`, latency pinned at ~37s for every failure. The one survivor took 61.5s and emitted 1014 output tokens. This was strictly worse than the bug it replaced: run 3 blocked 4 briefs but at least _produced_ them; run 4 produced nothing at all. The ~677 hermetic tests were green throughout, including a test written specifically to guard this setting.
+
+**Cause:** two layers.
+
+1. `ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS = 12_000` was set on the **shared** `AnthropicModelClient` (`timeout:` in the constructor). It was sized for the guarantee classifier's ~200-token verdicts. The same client also serves **generation** calls, which emit up to 4096 tokens and legitimately run tens of seconds. `12s x (2 retries + 1) = 36s` — exactly the observed latency. One constant, two workloads whose requirements point in opposite directions.
+2. The guard test, `FOS1-GCLS-timeout-01`, asserted `GUARANTEE_CLASSIFIER_TIMEOUT_MS > PER_ATTEMPT x (MAX_RETRIES + 1)` — two constants compared to each other. That assertion gets **easier** to satisfy as `PER_ATTEMPT` falls, so it applied downward pressure to the very number generation needed to be large. It was green at 12s and would stay green at 1s. It could never observe that the value reached the SDK, let alone that it was appropriate there.
+
+**Rule:**
+
+- **Before setting a tuning constant on a shared client, enumerate its call sites and their requirements.** If two call sites want the value moved in opposite directions, the constant does not belong on the client — push it to the call site (an optional per-call parameter) and make the **safe direction the default**, so a caller who forgets is slow rather than starved.
+- **Assert on the value that will actually be enforced, not on the constant.** For the Anthropic SDK the resolved per-attempt timeout is observable through the already-injected `fetchImpl` as the `X-Stainless-Timeout` header (whole seconds) — verified empirically, not assumed. Reading it turns "the number is 120000" into "a generation call is actually given 120s."
+- **Check the direction a relational assertion applies pressure in.** `expect(A).toBeGreaterThan(B * k)` constrains the _pair_; it silently licenses driving `B` to zero. If `B` also has a floor, that floor needs its own assertion, in the opposite direction, anchored to a **measurement** rather than to another constant (here: the slowest observed healthy live run, 61.5s).
+- Scope a relational assertion to constants used by **one** workload. Pointing it at a shared constant is what let this pass review.
+
+**Provenance:** PR #132 introduced it (P1.10j, fixing the run-3 timeout-as-verdict bug); live run 4, 2026-07-27, exposed it; P1.10n fixed it by making the timeout per-call-site (`GenerateStructuredInput.perAttemptTimeoutMs`, default `ANTHROPIC_GENERATION_TIMEOUT_MS = 120_000`; the classifier passes `ANTHROPIC_CLASSIFIER_TIMEOUT_MS = 12_000`). The replacement tests (`FOS1-RT-10`) were demonstrated to FAIL against the 12s default before the fix was kept.

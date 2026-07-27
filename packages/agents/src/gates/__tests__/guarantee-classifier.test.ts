@@ -10,7 +10,7 @@ import { GUARANTEE_CORPUS } from "./guarantee-corpus.js";
 import type { GuaranteeClassifierDeps } from "../guarantee-classifier.js";
 import { FakeModelClient, validResult } from "../../__tests__/fake-model-client.js";
 import type { ModelClient } from "../../model-client.js";
-import { ANTHROPIC_MAX_RETRIES, ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS } from "../../model-client.js";
+import { ANTHROPIC_MAX_RETRIES, ANTHROPIC_CLASSIFIER_TIMEOUT_MS } from "../../model-client.js";
 
 // ===========================================================================
 // Hermetic tests — FakeModelClient only. NO real model call ever occurs here.
@@ -381,7 +381,14 @@ describe("timeout budget vs the SDK retry loop (P1.10j — live run 3)", () => {
     // budget was sized for ONE attempt while the SDK underneath retries twice
     // with backoff. If someone later lowers the wrapper budget or raises the
     // retry count without checking the other, this fails.
-    const worstCaseAttempts = ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1);
+    //
+    // SCOPED TO THE CLASSIFIER'S OWN CONSTANT (P1.10n). This assertion gets
+    // EASIER to satisfy as the per-attempt value falls, so pointing it at a
+    // constant shared with generation applied downward pressure to exactly the
+    // wrong number — which is how the run-4 regression passed review. The
+    // generation budget is asserted separately, and in the opposite direction,
+    // by FOS1-RT-10.
+    const worstCaseAttempts = ANTHROPIC_CLASSIFIER_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1);
     expect(GUARANTEE_CLASSIFIER_TIMEOUT_MS).toBeGreaterThan(worstCaseAttempts);
   });
 

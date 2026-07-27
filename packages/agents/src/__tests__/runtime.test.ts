@@ -14,7 +14,11 @@ import { NotionClient } from "@fos/notion";
 import { createTestDb, seedWorkspace, setFeatureFlag } from "./test-db.js";
 import { FakeModelClient, validResult, invalidResult } from "./fake-model-client.js";
 import { runAgent } from "../pipeline.js";
-import { AnthropicModelClient } from "../model-client.js";
+import {
+  AnthropicModelClient,
+  ANTHROPIC_GENERATION_TIMEOUT_MS,
+  ANTHROPIC_CLASSIFIER_TIMEOUT_MS,
+} from "../model-client.js";
 import {
   fosSmokeAgentDefinition,
   FOS_SMOKE_AGENT_KEY,
@@ -877,5 +881,95 @@ describe("FOS1-RT-09: ModelClient is required (compile-time) + credential-refere
     } finally {
       delete process.env[credentialReference];
     }
+  });
+});
+
+describe("FOS1-RT-10: the per-attempt timeout is per CALL SITE, not per client (P1.10n — live run 4)", () => {
+  const CREDENTIAL = "FOS_TEST_ANTHROPIC_KEY_TIMEOUT";
+
+  /**
+   * Observation port: the SDK emits its RESOLVED per-attempt timeout, in whole
+   * seconds, as `X-Stainless-Timeout` on the outgoing request. Reading it
+   * through the injected `fetchImpl` tests the value that will actually be
+   * ENFORCED, rather than comparing two constants to each other — which is
+   * exactly what the superseded FOS1-GCLS-timeout-01 did, and why it could not
+   * see the run-4 regression.
+   */
+  function captureTimeoutHeader() {
+    const seconds: string[] = [];
+    const fetchImpl = (async (
+      _url: unknown,
+      init: { headers?: ConstructorParameters<typeof Headers>[0] },
+    ) => {
+      seconds.push(new Headers(init?.headers).get("x-stainless-timeout") ?? "ABSENT");
+      return new Response(
+        JSON.stringify({
+          id: "msg_test",
+          type: "message",
+          role: "assistant",
+          model: "m",
+          content: [
+            { type: "tool_use", id: "t", name: "emit_structured_output", input: { ok: true } },
+          ],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    return { seconds, fetchImpl };
+  }
+
+  beforeEach(() => {
+    process.env[CREDENTIAL] = "sk-ant-hermetic-not-a-real-key";
+  });
+  afterEach(() => {
+    delete process.env[CREDENTIAL];
+  });
+
+  it("a call that specifies no timeout gets the GENERATION budget, not the classifier's", async () => {
+    // THE RUN-4 REGRESSION. #132 set one global 12s per-attempt timeout on the
+    // shared client, sized for the classifier's ~200-token verdicts. Generation
+    // calls emit up to 4096 tokens and take tens of seconds, so 7 of 8 briefs
+    // died at stage 5 with "Request timed out" at ~37s (= 12s x 3 attempts),
+    // having produced nothing. The default must be the GENEROUS direction: a
+    // caller who forgets is slow, never starved.
+    const { seconds, fetchImpl } = captureTimeoutHeader();
+    await new AnthropicModelClient({
+      fetchImpl,
+      credentialReference: CREDENTIAL,
+    }).generateStructured({
+      systemPrompt: "s",
+      userContent: "u",
+      outputJsonSchema: { type: "object" },
+      model: "m",
+    });
+
+    expect(seconds).toEqual([String(ANTHROPIC_GENERATION_TIMEOUT_MS / 1000)]);
+    expect(Number(seconds[0])).toBeGreaterThan(ANTHROPIC_CLASSIFIER_TIMEOUT_MS / 1000);
+  });
+
+  it("an explicit per-call timeout reaches the SDK and overrides the default", async () => {
+    const { seconds, fetchImpl } = captureTimeoutHeader();
+    await new AnthropicModelClient({
+      fetchImpl,
+      credentialReference: CREDENTIAL,
+    }).generateStructured({
+      systemPrompt: "s",
+      userContent: "u",
+      outputJsonSchema: { type: "object" },
+      model: "m",
+      perAttemptTimeoutMs: ANTHROPIC_CLASSIFIER_TIMEOUT_MS,
+    });
+
+    expect(seconds).toEqual([String(ANTHROPIC_CLASSIFIER_TIMEOUT_MS / 1000)]);
+  });
+
+  it("the generation budget clears the slowest observed real run with headroom", () => {
+    // Not arithmetic: the one brief that SURVIVED run 4 took 61.5s end to end
+    // and emitted 1014 output tokens. A per-attempt budget at or below that is
+    // a coin flip on the next slow-but-healthy generation.
+    const SLOWEST_OBSERVED_LIVE_RUN_MS = 61_500;
+    expect(ANTHROPIC_GENERATION_TIMEOUT_MS).toBeGreaterThan(SLOWEST_OBSERVED_LIVE_RUN_MS);
   });
 });
