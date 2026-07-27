@@ -302,9 +302,17 @@ export async function classifyGuarantee(
     raw = result.output;
   } catch (err) {
     const kind = err instanceof TimeoutError ? "timeout" : "error";
+    // Preserve the cause. Failing closed is correct; discarding WHY is not.
+    // The first live recall run produced 36 identical
+    // "did not return a verdict" blocks with no further detail, so an auth
+    // failure, a rate limit, and a malformed response were indistinguishable —
+    // and a 100% block rate reads as "100% recall" in the eval's own summary.
+    // A fail-closed path that hides its cause turns an outage into a passing
+    // grade.
+    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     return {
       verdict: "block",
-      reason: `tier-2 fail-closed (${kind}): classifier call did not return a verdict`,
+      reason: `tier-2 fail-closed (${kind}): classifier call did not return a verdict — ${detail}`,
     };
   }
 

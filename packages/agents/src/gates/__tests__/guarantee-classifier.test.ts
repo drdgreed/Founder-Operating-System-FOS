@@ -290,3 +290,51 @@ describe("classifier scope (P1.10f — driven by the second live run)", () => {
     expect(decision.reason).toContain("low-confidence");
   });
 });
+
+describe("fail-closed diagnostics (P1.10h — the misleading recall run)", () => {
+  it("FOS1-GCLS-diag-01: a thrown call blocks AND preserves the cause", async () => {
+    // The first live recall run produced 36 identical blocks reading only
+    // "classifier call did not return a verdict". Auth failure, rate limit and
+    // malformed response were indistinguishable, so the outage could not be
+    // diagnosed from the output — and the eval scored it as 100% recall.
+    const model = {
+      generateStructured: async () => {
+        throw new Error("401 authentication_error: invalid x-api-key");
+      },
+    };
+    const d = await evaluateGuaranteeText("you'll graduate job-ready", { model });
+    expect(d.verdict).toBe("block");
+    // Still fail-closed...
+    expect(d.reason).toContain("fail-closed (error)");
+    // ...but now diagnosable.
+    expect(d.reason).toContain("401 authentication_error");
+  });
+
+  it("FOS1-GCLS-diag-02: a non-Error throw is still surfaced, not swallowed", async () => {
+    const model = {
+      generateStructured: async () => {
+        throw "socket hang up";
+      },
+    };
+    const d = await evaluateGuaranteeText("prepared to enter the market", { model });
+    expect(d.verdict).toBe("block");
+    expect(d.reason).toContain("socket hang up");
+  });
+
+  it("FOS1-GCLS-diag-03: a genuine low-confidence verdict is NOT labelled an error", async () => {
+    // The eval treats "(error)" and "(timeout)" as never-classified and marks
+    // the whole run INVALID. A real-but-uncertain classification must not be
+    // caught by that net, or a legitimate run would be discarded as an outage.
+    const model = {
+      generateStructured: async () => ({
+        output: { verdict: "allow", confidence: "low", reason: "ambiguous" },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    };
+    const d = await evaluateGuaranteeText("some text", { model });
+    expect(d.verdict).toBe("block");
+    expect(d.reason).toContain("low-confidence");
+    expect(d.reason).not.toContain("fail-closed (error)");
+    expect(d.reason).not.toContain("fail-closed (timeout)");
+  });
+});
