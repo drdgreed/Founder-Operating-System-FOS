@@ -368,6 +368,26 @@ describe("corpus: internal analytical text (P1.10i)", () => {
   const analyticalAllow = analytical.filter((e) => e.expected === "allow");
   const analyticalBlock = analytical.filter((e) => e.expected === "block");
 
+  it("FOS1-GCLS-corpus-00: the corpus array is dense and every entry is well-formed", () => {
+    // A scripted append to this file left a stray comma, producing a SPARSE
+    // array whose hole reads as `undefined`. Nothing in the suite saw it: every
+    // consumer here filters with optional chaining (`e.note?.startsWith`), so a
+    // hole is silently skipped. `tsc` caught it in CI, but the live recall eval
+    // iterates this array and reads `entry.text` directly — it would have
+    // crashed mid-run, after spending money.
+    //
+    // Structural, not judgement-maintained (P-004): asserts the shape rather
+    // than trusting an appender to be careful.
+    for (const [index, entry] of GUARANTEE_CORPUS.entries()) {
+      expect(entry, `hole at index ${index}`).toBeDefined();
+      expect(entry.text.trim().length, `empty text at index ${index}`).toBeGreaterThan(0);
+      expect(["allow", "block"], `bad expected at index ${index}`).toContain(entry.expected);
+    }
+    // A hole survives `.entries()` as an explicit undefined, but a trailing one
+    // would not — compare the dense count to the declared length as well.
+    expect(GUARANTEE_CORPUS.filter((e) => e != null)).toHaveLength(GUARANTEE_CORPUS.length);
+  });
+
   it("FOS1-GCLS-corpus-01: the corpus now samples internal analytical text at all", () => {
     // The corpus that gates the classifier contained only marketing/coaching
     // copy, so the P1.10f recall eval could pass while saying nothing about the

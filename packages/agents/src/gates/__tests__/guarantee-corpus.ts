@@ -239,7 +239,6 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     note: "analytical-block; a guarantee the brief instructs the founder to REPEAT outward",
   },
 
-  ,
   // -------------------------------------------------------------------------
   // F-P / F-Q (live run 5). Both blocks in run 5 were the gates firing on
   // CAREFUL model output, not on unsafe output. These rows are the contract
