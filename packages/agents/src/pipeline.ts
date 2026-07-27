@@ -48,12 +48,19 @@ export const DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY = 6;
  */
 async function reviewTextsConcurrently(
   texts: readonly string[],
-  reviewer: (text: string) => Promise<{ verdict: string; reason: string }>,
+  reviewer: (text: string) => Promise<{ verdict: string; reason: string; usage?: ModelUsage }>,
   concurrency: number,
-): Promise<string | null> {
+): Promise<{ blockReason: string | null; usage: ModelUsage }> {
   type Outcome =
     { kind: "allow" } | { kind: "block"; reason: string } | { kind: "error"; err: unknown };
   const outcomes = new Array<Outcome | undefined>(texts.length);
+  // Stage-7b spend, summed across every classifier call this review made.
+  const reviewUsage: ModelUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  };
   let nextIndex = 0;
   /** Lowest index known to be non-allow; workers stop claiming past it. */
   let stopAfter = Number.POSITIVE_INFINITY;
@@ -65,6 +72,15 @@ async function reviewTextsConcurrently(
       nextIndex += 1;
       try {
         const decision = await reviewer(texts[index]!);
+        if (decision.usage) {
+          reviewUsage.inputTokens += decision.usage.inputTokens;
+          reviewUsage.outputTokens += decision.usage.outputTokens;
+          reviewUsage.cacheCreationInputTokens =
+            (reviewUsage.cacheCreationInputTokens ?? 0) +
+            (decision.usage.cacheCreationInputTokens ?? 0);
+          reviewUsage.cacheReadInputTokens =
+            (reviewUsage.cacheReadInputTokens ?? 0) + (decision.usage.cacheReadInputTokens ?? 0);
+        }
         if (decision.verdict === "allow") {
           outcomes[index] = { kind: "allow" };
         } else {
@@ -85,9 +101,9 @@ async function reviewTextsConcurrently(
     const outcome = outcomes[index];
     if (outcome === undefined || outcome.kind === "allow") continue;
     if (outcome.kind === "error") throw outcome.err;
-    return outcome.reason;
+    return { blockReason: outcome.reason, usage: reviewUsage };
   }
-  return null;
+  return { blockReason: null, usage: reviewUsage };
 }
 
 export interface RunAgentResult {
@@ -433,11 +449,28 @@ export async function runAgent<TInput, TOutput>(
         const texts = [
           ...new Set(definition.complianceReviewText(output).filter((t) => t.trim().length > 0)),
         ];
-        complianceBlockReason = await reviewTextsConcurrently(
+        const review = await reviewTextsConcurrently(
           texts,
           reviewer,
           deps.complianceReviewConcurrency ?? DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY,
         );
+        complianceBlockReason = review.blockReason;
+        // Fold stage-7b spend into the run's usage so `costJson` reflects what
+        // the run ACTUALLY cost. Previously it held only the generation call,
+        // so a successful run's 12-20 classifier calls were invisible — live
+        // run 3's wall clock rose 70% while reported tokens stayed flat (F-J).
+        // Every later `costJson: usage` write picks this up, including the
+        // compliance-block path immediately below.
+        if (review.usage.inputTokens > 0 || review.usage.outputTokens > 0) {
+          usage = {
+            inputTokens: (usage?.inputTokens ?? 0) + review.usage.inputTokens,
+            outputTokens: (usage?.outputTokens ?? 0) + review.usage.outputTokens,
+            cacheCreationInputTokens:
+              (usage?.cacheCreationInputTokens ?? 0) + (review.usage.cacheCreationInputTokens ?? 0),
+            cacheReadInputTokens:
+              (usage?.cacheReadInputTokens ?? 0) + (review.usage.cacheReadInputTokens ?? 0),
+          };
+        }
       } catch (err) {
         // Fail closed: an exception in the review must never bypass it.
         const message = err instanceof Error ? err.message : String(err);

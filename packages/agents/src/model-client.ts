@@ -26,6 +26,15 @@ export interface GenerateStructuredInput {
 export interface ModelUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Tokens written to the prompt cache on this call (billed at ~1.25x). */
+  cacheCreationInputTokens?: number;
+  /**
+   * Tokens served FROM the prompt cache (billed at ~0.1x). The CLAUDE.md
+   * Claude-API standard requires checking this before caching is called done:
+   * a zero read-rate across repeated identical-prefix calls means a silent
+   * invalidator, not a working cache.
+   */
+  cacheReadInputTokens?: number;
 }
 
 export interface GenerateStructuredResult {
@@ -120,6 +129,27 @@ export class AnthropicModelClient implements ModelClient {
       // order is tools -> system -> messages, so a cache_control breakpoint
       // on the last (only) system block caches tools + system together;
       // userContent after it is left uncached since it varies per request.
+      //
+      // UNCONDITIONAL on purpose. A prefix below the model's cacheable minimum
+      // (1024 tokens on Sonnet 5) is silently ignored — no cache entry, and so
+      // no ~1.25x write premium either. The breakpoint therefore costs nothing
+      // where it cannot help, and starts helping automatically if a caller's
+      // prefix later grows past the threshold. Gating it would be a switch for
+      // turning off something free.
+      //
+      // Measured prefixes (tool schema + system prompt, ~4 chars/token):
+      //   guarantee classifier        ~1081 tok — just over the minimum, and
+      //                                called 12-20x per agent run with a
+      //                                byte-identical prefix. The call site
+      //                                that actually matters.
+      //   agent def (enrollment_brief) ~542 tok — below the minimum today, so
+      //                                the breakpoint is a no-op there. Not an
+      //                                error; just not yet a benefit.
+      //
+      // The classifier's margin is ~5%, inside the error of a chars/4 estimate,
+      // so whether it truly caches is UNKNOWN until observed. That is what
+      // ModelUsage.cacheReadInputTokens below exists for — the CLAUDE.md
+      // Claude-API standard requires checking it before caching is called done.
       system: [
         {
           type: "text",
@@ -150,6 +180,12 @@ export class AnthropicModelClient implements ModelClient {
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
+        // Surfaced so prompt caching can be VERIFIED rather than assumed. Note
+        // `input_tokens` is the UNCACHED remainder only — total prompt size is
+        // input + cache_creation + cache_read. A cost figure built on
+        // `input_tokens` alone under-reports a cached call.
+        cacheCreationInputTokens: response.usage.cache_creation_input_tokens ?? 0,
+        cacheReadInputTokens: response.usage.cache_read_input_tokens ?? 0,
       },
     };
   }

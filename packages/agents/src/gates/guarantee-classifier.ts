@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { ModelClient } from "../model-client.js";
+import type { ModelClient, ModelUsage } from "../model-client.js";
 import { DEFAULT_MODEL } from "../model-client.js";
 import { zodToJsonSchema } from "../schema-to-json.js";
 
@@ -47,6 +47,17 @@ export interface GuaranteeDecision {
 }
 
 export interface GuaranteeDecisionWithTier extends GuaranteeDecision {
+  /**
+   * Tokens this classification cost, when a model call was actually made.
+   * Absent for a tier-1 floor block (no call) and for a fail-closed path that
+   * never got a response.
+   *
+   * Exists because `agent_run.costJson` recorded ONLY the generation call, so
+   * every stage-7b call — 12-20 per successful run — was invisible to cost
+   * accounting. Live run 3's wall clock rose 70% while reported tokens stayed
+   * flat, which is the shape of that gap (F-J).
+   */
+  usage?: ModelUsage;
   /** Which tier produced the decision: the deterministic floor, the semantic
    * classifier, or an internal error path (which always fails closed). */
   tier: "tier1-floor" | "tier2-classifier";
@@ -306,13 +317,16 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 export async function classifyGuarantee(
   text: string,
   deps: GuaranteeClassifierDeps,
-): Promise<GuaranteeDecision> {
+): Promise<GuaranteeDecision & { usage?: ModelUsage }> {
   const modelName = deps.modelName ?? DEFAULT_MODEL;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   // Unpredictable per-request delimiter — a break-out fence is not constructible.
   const nonce = randomUUID().replace(/-/g, "");
 
   let raw: unknown;
+  // Set only once a response actually arrives, so a thrown/timed-out call
+  // reports no usage rather than a misleading zero.
+  let usage: ModelUsage | undefined;
   try {
     const result = await withTimeout(
       deps.model.generateStructured({
@@ -324,6 +338,7 @@ export async function classifyGuarantee(
       timeoutMs,
     );
     raw = result.output;
+    usage = result.usage;
   } catch (err) {
     const kind = err instanceof TimeoutError ? "timeout" : "error";
     // Preserve the cause. Failing closed is correct; discarding WHY is not.
@@ -346,6 +361,7 @@ export async function classifyGuarantee(
       verdict: "block",
       reason:
         "tier-2 fail-closed (schema-invalid): classifier response did not match the output schema",
+      usage,
     };
   }
 
@@ -354,14 +370,15 @@ export async function classifyGuarantee(
   // Fail closed on anything short of a CONFIDENT allow. A block at any
   // confidence stays a block; a low-confidence allow becomes a block.
   if (verdict === "allow" && confidence === "high") {
-    return { verdict: "allow", reason };
+    return { verdict: "allow", reason, usage };
   }
   if (verdict === "block") {
-    return { verdict: "block", reason };
+    return { verdict: "block", reason, usage };
   }
   return {
     verdict: "block",
     reason: `tier-2 fail-closed (low-confidence): uncertain "${verdict}" verdict treated as block — ${reason}`,
+    usage,
   };
 }
 
