@@ -62,7 +62,31 @@ export interface GuaranteeClassifierDeps {
   timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+/**
+ * Wall-clock budget for ONE classifier decision, covering the SDK's entire
+ * retry sequence — not a single attempt.
+ *
+ * The old 15_000 was sized for one un-retried call and was structurally too
+ * tight: `AnthropicModelClient` lets the SDK retry 429/5xx twice with
+ * exponential backoff, so a single `generateStructured` can be three attempts.
+ * The outer `withTimeout` was therefore racing a retry loop it did not know
+ * about. In live run 3 that surfaced as four of eight briefs blocked by
+ * "exceeded 15000ms" — timeouts recorded as compliance decisions, which is the
+ * worst kind of block because it looks like a verdict.
+ *
+ * The interaction with DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY is the reason this
+ * appeared only in run 3: earlier runs blocked at the first classifier call, so
+ * the fan-out never happened and the two settings were never exercised
+ * together. Concurrent calls make 429s — and therefore retries — more likely.
+ *
+ *   ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS (12s) x (ANTHROPIC_MAX_RETRIES + 1 = 3)
+ *     = 36s of attempts, plus SDK backoff between them.
+ *
+ * 45s leaves headroom over that without letting a genuinely hung call stall a
+ * run indefinitely. Fail-closed on expiry is unchanged.
+ */
+export const GUARANTEE_CLASSIFIER_TIMEOUT_MS = 45_000;
+const DEFAULT_TIMEOUT_MS = GUARANTEE_CLASSIFIER_TIMEOUT_MS;
 
 // ---------------------------------------------------------------------------
 // Tier 1 — deterministic floor (hard block, NO model call).

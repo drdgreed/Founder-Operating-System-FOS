@@ -4,11 +4,13 @@ import {
   evaluateGuaranteeText,
   tier1FloorBlock,
   GUARANTEE_CLASSIFIER_SYSTEM_PROMPT,
+  GUARANTEE_CLASSIFIER_TIMEOUT_MS,
 } from "../guarantee-classifier.js";
 import { GUARANTEE_CORPUS } from "./guarantee-corpus.js";
 import type { GuaranteeClassifierDeps } from "../guarantee-classifier.js";
 import { FakeModelClient, validResult } from "../../__tests__/fake-model-client.js";
 import type { ModelClient } from "../../model-client.js";
+import { ANTHROPIC_MAX_RETRIES, ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS } from "../../model-client.js";
 
 // ===========================================================================
 // Hermetic tests — FakeModelClient only. NO real model call ever occurs here.
@@ -369,5 +371,43 @@ describe("corpus: internal analytical text (P1.10i)", () => {
     // testing what it was added to test.
     const floored = analyticalBlock.filter((e) => tier1FloorBlock(e.text) !== null);
     expect(floored.map((e) => e.text)).toEqual([]);
+  });
+});
+
+describe("timeout budget vs the SDK retry loop (P1.10j — live run 3)", () => {
+  it("FOS1-GCLS-timeout-01: the classifier budget exceeds the SDK's full retry sequence", () => {
+    // Live run 3 blocked 4 of 8 briefs with "exceeded 15000ms" — timeouts
+    // recorded as compliance decisions. The cause was layering: the wrapper's
+    // budget was sized for ONE attempt while the SDK underneath retries twice
+    // with backoff. If someone later lowers the wrapper budget or raises the
+    // retry count without checking the other, this fails.
+    const worstCaseAttempts = ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1);
+    expect(GUARANTEE_CLASSIFIER_TIMEOUT_MS).toBeGreaterThan(worstCaseAttempts);
+  });
+
+  it("FOS1-GCLS-timeout-02: a call finishing inside the budget still returns a real verdict", async () => {
+    const model: ModelClient = {
+      generateStructured: async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        return {
+          output: { verdict: "allow", confidence: "high", reason: "no guarantee present" },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const d = await evaluateGuaranteeText("Observed: currently a Data Analyst at Acme Corp.", {
+      model,
+    });
+    expect(d.verdict).toBe("allow");
+  });
+
+  it("FOS1-GCLS-timeout-03: expiry still FAILS CLOSED and is labelled a timeout, not a verdict", async () => {
+    // Raising the budget must not soften what a timeout means.
+    const model: ModelClient = {
+      generateStructured: () => new Promise(() => {}),
+    };
+    const d = await evaluateGuaranteeText("anything", { model, timeoutMs: 20 });
+    expect(d.verdict).toBe("block");
+    expect(d.reason).toContain("fail-closed (timeout)");
   });
 });

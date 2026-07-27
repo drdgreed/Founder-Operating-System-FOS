@@ -3,6 +3,18 @@ import Anthropic from "@anthropic-ai/sdk";
 /** Default Sonnet model tier (ADR-07 §1, D1). */
 export const DEFAULT_MODEL = "claude-sonnet-5";
 
+/**
+ * Retries the SDK performs per call (429 / 5xx, exponential backoff). Stated
+ * explicitly so a caller wrapping this in a wall-clock timeout can size that
+ * budget; inheriting the SDK default silently made the guarantee classifier's
+ * 15s wrapper race a call that could legitimately take three attempts.
+ */
+export const ANTHROPIC_MAX_RETRIES = 2;
+
+/** Per-ATTEMPT timeout. Total wall clock is bounded by roughly
+ * `ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1)` plus backoff. */
+export const ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS = 12_000;
+
 export interface GenerateStructuredInput {
   systemPrompt: string;
   userContent: string;
@@ -88,12 +100,33 @@ export class AnthropicModelClient implements ModelClient {
       apiKey: this.getApiKey(),
       fetch: this.fetchImpl,
       baseURL: this.baseUrl,
+      // Make the retry budget EXPLICIT rather than inheriting the SDK default
+      // and racing it from outside. The SDK retries 429/5xx with exponential
+      // backoff, so one call to this method can be several attempts; callers
+      // that wrap it in their own wall-clock timeout (the guarantee classifier
+      // does) must be able to size that budget from a known number instead of
+      // guessing. See DEFAULT_TIMEOUT_MS in gates/guarantee-classifier.ts for
+      // the arithmetic.
+      maxRetries: ANTHROPIC_MAX_RETRIES,
+      timeout: ANTHROPIC_PER_ATTEMPT_TIMEOUT_MS,
     });
 
     const response = await client.messages.create({
       model: input.model,
       max_tokens: 4096,
-      system: input.systemPrompt,
+      // System prompt is a fixed constant per caller (e.g.
+      // GUARANTEE_CLASSIFIER_SYSTEM_PROMPT) reused across many calls with
+      // different `userContent` — the ideal prompt-caching boundary. Render
+      // order is tools -> system -> messages, so a cache_control breakpoint
+      // on the last (only) system block caches tools + system together;
+      // userContent after it is left uncached since it varies per request.
+      system: [
+        {
+          type: "text",
+          text: input.systemPrompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       messages: [{ role: "user", content: input.userContent }],
       tools: [
         {
