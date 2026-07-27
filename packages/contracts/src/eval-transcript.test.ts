@@ -78,4 +78,51 @@ describe("runTranscriptSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("FOS1-EVALTX-06: cache accounting is preserved when present, and ABSENT stays absent", () => {
+    // Absent and zero must stay distinguishable. Absent = never measured (every
+    // transcript written before #135/P1.10o, and every stub run). Zero =
+    // measured, and nothing was served from cache — which per the CLAUDE.md
+    // Claude-API standard means a silent invalidator or a prefix under the
+    // model's cacheable minimum. A required-with-default-0 field would collapse
+    // the two and erase the only signal F-N turns on.
+    const absent = runTranscriptSchema.parse(VALID);
+    expect(absent.usage.cache_read_input_tokens).toBeUndefined();
+    expect(absent.usage.cache_creation_input_tokens).toBeUndefined();
+
+    const measuredZero = runTranscriptSchema.parse({
+      ...VALID,
+      model: "claude-sonnet-5",
+      usage: {
+        input_tokens: 4000,
+        output_tokens: 1500,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    });
+    expect(measuredZero.usage.cache_read_input_tokens).toBe(0);
+
+    const measuredHit = runTranscriptSchema.parse({
+      ...VALID,
+      model: "claude-sonnet-5",
+      usage: {
+        input_tokens: 300,
+        output_tokens: 120,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 1081,
+      },
+    });
+    expect(measuredHit.usage.cache_read_input_tokens).toBe(1081);
+  });
+
+  it("FOS1-EVALTX-07: a negative or fractional cache count is rejected", () => {
+    for (const bad of [-1, 1.5]) {
+      expect(() =>
+        runTranscriptSchema.parse({
+          ...VALID,
+          usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: bad },
+        }),
+      ).toThrow();
+    }
+  });
 });
