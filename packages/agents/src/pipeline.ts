@@ -107,6 +107,15 @@ export interface RunAgentResult {
    * make the two indistinguishable to any consumer of this result. */
   complianceReview?: { blocked: boolean; reason?: string };
   reason?: string;
+  /**
+   * The Zod-validated structured output from stage 6, when the run got that
+   * far. Present on `succeeded` AND on both `policy_blocked` paths — a
+   * blocked run's output is exactly what a reviewer or eval grader most needs
+   * to see, since it is the thing that triggered the block. Absent on
+   * `evaluation_failed` (no valid output existed) and on a disabled flag (the
+   * model never ran).
+   */
+  output?: unknown;
   /** True when the run succeeded (canonical committed) but the isolated
    * stage-11 projection (a non-canonical Notion write) failed and was
    * deferred to a later reconcile — the run is NOT failed for this. */
@@ -376,6 +385,7 @@ export async function runAgent<TInput, TOutput>(
         mode,
         retryCount,
         gateEvaluations: gateOutcome.evaluations,
+        output,
         reason: gateOutcome.blockedBy?.reason,
       };
     }
@@ -474,6 +484,7 @@ export async function runAgent<TInput, TOutput>(
           retryCount,
           gateEvaluations: gateOutcome.evaluations,
           complianceReview: { blocked: true, reason: complianceBlockReason },
+          output,
           reason: complianceBlockReason,
         };
       }
@@ -611,6 +622,7 @@ export async function runAgent<TInput, TOutput>(
       artifact: { artifactId: artifactResult.artifactId, versionId: artifactResult.versionId },
       gateEvaluations: gateOutcome.evaluations,
       complianceReview,
+      output,
       projectionDeferred,
     };
   } catch (err) {

@@ -54,7 +54,11 @@
     "max_retry_count": 1,
     "compliance_review_blocked": false,
     "paired_control": null,
-    "control_must_match": []
+    "control_must_match": [],
+    "output_assertions": [
+      { "path": "fitStatus", "op": "in", "value": ["strong_fit", "possible_fit"] },
+      { "path": "observedFacts", "op": "min_length", "value": 1 }
+    ]
   },
   "critical_if_failed": ["artifact_version_status"]
 }

@@ -307,6 +307,11 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
               }
             : null,
           artifact,
+          // The Zod-validated model output, so fixtures can assert about the
+          // agent's actual field values and not merely about gate outcomes.
+          // Present on blocked runs too — the output that triggered a block is
+          // the most diagnostic thing in the transcript.
+          output: result?.output ?? null,
           projection_deferred: result?.projectionDeferred ?? false,
           // Read model + token usage back from the persisted `agent_run` row
           // rather than hardcoding them. Under --live these are the real model

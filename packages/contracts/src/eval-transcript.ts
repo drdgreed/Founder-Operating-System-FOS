@@ -71,6 +71,20 @@ export const runTranscriptSchema = z
         version_status: z.enum(evalArtifactVersionStatusValues),
       })
       .nullable(),
+    /**
+     * The agent's Zod-validated structured output, verbatim (design §4, amended
+     * 2026-07-26). Absent when the run produced none — a gate block before
+     * stage 6, an `evaluation_failed`, or a throw.
+     *
+     * Omitting this from the first draft silently cost the harness most of its
+     * groundedness coverage: without the output there is nothing for a fixture
+     * to assert ABOUT, so six of the eight enrollment_brief fixtures collapsed
+     * into asserting a byte-identical tuple and became indistinguishable as
+     * tests. Safe to record because eval runs execute only against synthetic
+     * fixtures (D4); shadow-mode runs on real applicant data are a separate
+     * mechanism and out of scope here.
+     */
+    output: z.unknown().nullable(),
     projection_deferred: z.boolean(),
     model: z.string().min(1),
     usage: z.object({

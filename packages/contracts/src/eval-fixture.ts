@@ -38,6 +38,68 @@ export const criticalAssertionValues = [
   "status",
 ] as const;
 
+/**
+ * Structural operators an `output_assertion` may use (design §6.1). Six, all
+ * comparing shapes or exact values.
+ *
+ * There is deliberately NO keyword or substring operator. A `contains_any`
+ * would let a fixture express "objections[] includes a price objection" — and
+ * that is precisely the brittleness that already failed here: the
+ * prohibited-guarantee gate was keyword-based, leaked four times (lesson
+ * P-004), and was replaced by a semantic classifier in #110. Re-introducing
+ * keyword matching one layer up would repeat a mistake this project has
+ * already paid for. Constraints that genuinely need judgment stay as prose in
+ * `description`, asserted by nothing — which is honest, where a brittle
+ * assertion is not.
+ */
+export const outputAssertionOps = [
+  "equals",
+  "not_equals",
+  "in",
+  "not_in",
+  "min_length",
+  "max_length",
+] as const;
+
+/** One mechanically-checkable claim about a field of the agent's output. */
+export const outputAssertionSchema = z
+  .object({
+    /** Dot path into the run's `output`, e.g. `"readiness"` or `"unknowns"`. */
+    path: z.string().min(1),
+    op: z.enum(outputAssertionOps),
+    /** `in`/`not_in` take an array; `min_length`/`max_length` a number;
+     * `equals`/`not_equals` a scalar. */
+    value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
+  })
+  .strict()
+  .superRefine((a, ctx) => {
+    const isArrayOp = a.op === "in" || a.op === "not_in";
+    const isLengthOp = a.op === "min_length" || a.op === "max_length";
+    if (isArrayOp && !Array.isArray(a.value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: `${a.op} requires an array value`,
+      });
+    }
+    if (isLengthOp && typeof a.value !== "number") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: `${a.op} requires a numeric value`,
+      });
+    }
+    if (!isArrayOp && !isLengthOp && Array.isArray(a.value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: `${a.op} requires a scalar value`,
+      });
+    }
+  });
+
+export type OutputAssertion = z.infer<typeof outputAssertionSchema>;
+
 export const evalFixtureV2Schema = z
   .object({
     fixture_id: z.string().min(1),
@@ -67,6 +129,13 @@ export const evalFixtureV2Schema = z
         compliance_review_blocked: z.boolean().nullable(),
         paired_control: z.string().min(1).nullable(),
         control_must_match: z.array(z.enum(controlMatchFieldValues)),
+        /**
+         * Mechanically-checkable claims about the agent's OUTPUT (design §6.1).
+         * Optional and defaulting to `[]`, so fixtures written before the
+         * amendment stay valid. Failing one is an ORDINARY failure, never
+         * critical — `criticalAssertionValues` is unchanged and D6 stands.
+         */
+        output_assertions: z.array(outputAssertionSchema).default([]),
       })
       .strict(),
     critical_if_failed: z.array(z.enum(criticalAssertionValues)),
