@@ -4,7 +4,7 @@ import type { ArtifactDomain, ArtifactType } from "@fos/db/schema";
 import type { CreateArtifactResult, Db } from "@fos/db/services";
 import type { NotionClient } from "@fos/notion";
 import type { Gate } from "./gates/gate.js";
-import type { ModelClient } from "./model-client.js";
+import type { ModelClient, ModelUsage } from "./model-client.js";
 import type { PromptVocabulary } from "./prompt.js";
 import type { FeatureMode } from "./mode.js";
 
@@ -37,6 +37,9 @@ export interface RunAgentContext {
 export interface ComplianceReviewDecision {
   verdict: "allow" | "block";
   reason: string;
+  /** Tokens this review cost, when a model call was made. Threaded so stage-7b
+   * spend reaches `agent_run.costJson`; before this it was invisible (F-J). */
+  usage?: ModelUsage;
 }
 
 /**

@@ -474,3 +474,89 @@ describe("stage 7b — bounded-concurrency compliance review", () => {
     }
   });
 });
+
+describe("stage-7b cost accounting (P1.10m — F-J)", () => {
+  it("FOS1-CR-12: classifier tokens are ADDED to agent_run.costJson, not discarded", async () => {
+    const ctx = await createTestDb();
+    try {
+      const fixture = await seedWorkspace(ctx.db);
+      await setFeatureFlag(ctx.db, {
+        workspaceId: fixture.id,
+        key: crTestDefinition.featureFlagKey,
+        enabled: true,
+        mode: "review",
+      });
+
+      // Three reviewable texts, each reporting usage. Before F-J these were
+      // discarded entirely: costJson held only the generation call, so a
+      // successful run's 12-20 classifier calls were invisible and every cost
+      // figure for such a run was wrong.
+      const countingReviewer = async () => ({
+        verdict: "allow" as const,
+        reason: "ok",
+        usage: { inputTokens: 100, outputTokens: 20 },
+      });
+
+      const result = await runAgent(
+        {
+          db: ctx.db,
+          modelClient: new FakeModelClient([
+            validResult({ message: "benign readiness statement" }),
+          ]),
+          complianceReviewer: countingReviewer,
+        },
+        { ...crTestDefinition, complianceReviewText: () => ["a", "b", "c"] },
+        { note: "x" },
+        { workspaceId: fixture.id, actor: ACTOR, trigger: TRIGGER },
+      );
+      expect(result.status).toBe("succeeded");
+
+      const [row] = await ctx.db.select().from(agentRun).where(eq(agentRun.id, result.runId));
+      const cost = row!.costJson as { inputTokens: number; outputTokens: number };
+      // FakeModelClient's generation call reports 10/10; three reviews add
+      // 300/60. Asserting the SUM, not merely "non-zero", so a regression that
+      // records only one of the two sources still fails.
+      expect(cost.inputTokens).toBe(10 + 300);
+      expect(cost.outputTokens).toBe(10 + 60);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("FOS1-CR-13: a tier-1 floor block adds nothing — there was no model call to bill", async () => {
+    const ctx = await createTestDb();
+    try {
+      const fixture = await seedWorkspace(ctx.db);
+      await setFeatureFlag(ctx.db, {
+        workspaceId: fixture.id,
+        key: crTestDefinition.featureFlagKey,
+        enabled: true,
+        mode: "review",
+      });
+      // A reviewer that reports NO usage stands in for the floor path.
+      const freeReviewer = async () => ({ verdict: "allow" as const, reason: "floor, no call" });
+
+      const result = await runAgent(
+        {
+          db: ctx.db,
+          modelClient: new FakeModelClient([
+            validResult({ message: "benign readiness statement" }),
+          ]),
+          complianceReviewer: freeReviewer,
+        },
+        { ...crTestDefinition, complianceReviewText: () => ["a", "b"] },
+        { note: "x" },
+        { workspaceId: fixture.id, actor: ACTOR, trigger: TRIGGER },
+      );
+
+      const [row] = await ctx.db.select().from(agentRun).where(eq(agentRun.id, result.runId));
+      const cost = row!.costJson as { inputTokens: number; outputTokens: number };
+      // Only the generation call. Inventing zero-usage entries for calls that
+      // never happened would over-report just as badly as dropping real ones.
+      expect(cost.inputTokens).toBe(10);
+      expect(cost.outputTokens).toBe(10);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
