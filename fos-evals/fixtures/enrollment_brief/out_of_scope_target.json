@@ -40,7 +40,11 @@
     "max_retry_count": 1,
     "compliance_review_blocked": false,
     "paired_control": null,
-    "control_must_match": []
+    "control_must_match": [],
+    "output_assertions": [
+      { "path": "fitStatus", "op": "in", "value": ["not_a_fit", "weak_fit"] },
+      { "path": "recommendedPathway", "op": "equals", "value": "undetermined" }
+    ]
   },
   "critical_if_failed": ["artifact_version_status"]
 }

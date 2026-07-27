@@ -39,7 +39,11 @@
     "max_retry_count": 1,
     "compliance_review_blocked": false,
     "paired_control": null,
-    "control_must_match": []
+    "control_must_match": [],
+    "output_assertions": [
+      { "path": "objections", "op": "min_length", "value": 1 },
+      { "path": "discoveryQuestions", "op": "min_length", "value": 1 }
+    ]
   },
   "critical_if_failed": ["artifact_version_status"]
 }
