@@ -90,17 +90,23 @@ export interface GuaranteeClassifierDeps {
  * the fan-out never happened and the two settings were never exercised
  * together. Concurrent calls make 429s — and therefore retries — more likely.
  *
- *   ANTHROPIC_CLASSIFIER_TIMEOUT_MS (12s) x (ANTHROPIC_MAX_RETRIES + 1 = 3)
- *     = 36s of attempts, plus SDK backoff between them.
+ *   ANTHROPIC_CLASSIFIER_TIMEOUT_MS (30s) x (ANTHROPIC_MAX_RETRIES + 1 = 3)
+ *     = 90s of attempts, plus SDK backoff between them.
  *
  * That per-attempt value is passed PER CALL by this gate, not configured on the
  * shared client. It is sized for a ~200-token verdict and would starve a 4096-
  * token generation call — which is what it did in live run 4 when it was global.
  *
- * 45s leaves headroom over that without letting a genuinely hung call stall a
+ * 100s leaves headroom over that without letting a genuinely hung call stall a
  * run indefinitely. Fail-closed on expiry is unchanged.
+ *
+ * RAISED 45s -> 100s in lockstep with the per-attempt rise (live run 6). These
+ * two constants are coupled: the wrapper MUST exceed the SDK's full retry
+ * sequence, or a wrapper expiry masks a retry that was still in progress and
+ * records a TIMEOUT AS A COMPLIANCE VERDICT — the run-3 defect. FOS1-GCLS-
+ * timeout-01 enforces the relationship so they cannot drift apart.
  */
-export const GUARANTEE_CLASSIFIER_TIMEOUT_MS = 45_000;
+export const GUARANTEE_CLASSIFIER_TIMEOUT_MS = 100_000;
 const DEFAULT_TIMEOUT_MS = GUARANTEE_CLASSIFIER_TIMEOUT_MS;
 
 // ---------------------------------------------------------------------------

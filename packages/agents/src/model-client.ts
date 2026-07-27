@@ -36,8 +36,23 @@ export const ANTHROPIC_GENERATION_TIMEOUT_MS = 120_000;
  * Total wall clock for one classification is bounded by roughly
  * `ANTHROPIC_CLASSIFIER_TIMEOUT_MS * (ANTHROPIC_MAX_RETRIES + 1)` plus backoff,
  * which is what `GUARANTEE_CLASSIFIER_TIMEOUT_MS` is sized to exceed.
+ *
+ * RAISED 12s -> 30s after live run 6, where 7 of 8 briefs blocked with the
+ * SDK's own "Request timed out." — its per-attempt timeout, exhausting all
+ * three attempts (~36s) inside the 45s wrapper. Run 5 had zero timeouts at 12s;
+ * between them the classifier's system prompt grew ~31% (1034 -> 1352 tokens)
+ * and its cache prefix changed, so the first calls paid a cache WRITE.
+ *
+ * Note what the error was NOT: a 429 returns fast and the SDK retries it. A
+ * timeout means the request was in flight and slow. That distinction is why the
+ * per-attempt budget is the lever here and CONCURRENCY is not — see F-M, which
+ * requires one knob at a time.
+ *
+ * STILL DERIVED, NOT MEASURED — the same weakness that produced P-005. Run
+ * `scripts/classifier-latency-probe.ts` to replace this with a measured p100
+ * plus headroom; that probe exists so this constant stops being a guess.
  */
-export const ANTHROPIC_CLASSIFIER_TIMEOUT_MS = 12_000;
+export const ANTHROPIC_CLASSIFIER_TIMEOUT_MS = 30_000;
 
 export interface GenerateStructuredInput {
   systemPrompt: string;
