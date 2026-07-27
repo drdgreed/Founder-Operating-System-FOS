@@ -142,4 +142,100 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     expected: "block",
     note: "added; a role at a company",
   },
+
+  // =========================================================================
+  // INTERNAL ANALYTICAL TEXT (P1.10i)
+  //
+  // Why this section exists. Until P1.10f the classifier's prompt scoped it to
+  // "student-facing marketing or coaching copy". The second live run fed it
+  // enrollment-brief output — internal analytical notes — and it blocked 8 of 8
+  // while explicitly saying nothing was prohibited: out of genre, so
+  // low-confidence, so fail-closed. P1.10f widened the scope. But the corpus
+  // that GATES that change contained no analytical text at all, so the recall
+  // eval could confirm no harm and still say nothing about whether the fix
+  // works. These rows close that gap.
+  //
+  // TWO STRUCTURAL DIFFERENCES from the marketing rows above, and both matter:
+  //
+  //  1. THIRD PERSON. Analytical text is written ABOUT an applicant ("she is
+  //     certain to receive an offer"), not TO a student ("you'll land a job").
+  //     Every tier-1 floor pattern requires a literal "you", so the floor is
+  //     STRUCTURALLY BLIND to a guarantee phrased this way. Tier 2 is not the
+  //     primary defense here — it is the ONLY defense. The `block` rows below
+  //     are therefore all floor-escaping by construction, like SET 2.
+  //
+  //  2. NO PROMOTIONAL INTENT. These read as record-keeping, which is exactly
+  //     what made the classifier hedge. The `allow` rows are the false
+  //     positives P1.10f was written to eliminate.
+  //
+  // A guarantee here is not harmless: the brief is founder-facing, and P-004's
+  // whole history is a guarantee reaching a rendered artifact through a field
+  // nobody was scanning. A founder can paste a brief into an email.
+  // =========================================================================
+
+  // --- analytical ALLOW: ordinary brief content, no promise of any kind ----
+  {
+    text: "Applicant is a working data analyst targeting a senior analytics role within three months.",
+    expected: "allow",
+    note: "analytical; candidateSummary — descriptive, no promise",
+  },
+  {
+    text: "Observed: currently employed as a Data Analyst at Acme Corp.",
+    expected: "allow",
+    note: "analytical; observedFact — a sourced statement of fact",
+  },
+  {
+    text: "Readiness: insufficient_information — the application does not state prior experience.",
+    expected: "allow",
+    note: "analytical; the no-fabrication case, admitting a gap",
+  },
+  {
+    text: "Risk flag: applicant has revoked marketing-contact consent; founder-only review recommended.",
+    expected: "allow",
+    note: "analytical; riskFlag — the exact shape that blocked in live run 2",
+  },
+  {
+    text: "Unknown: budget authority is not stated anywhere in the application.",
+    expected: "allow",
+    note: "analytical; unknowns entry — terse, which previously read as 'vague'",
+  },
+  {
+    text: "Next action: schedule a discovery call to clarify timeline and budget.",
+    expected: "allow",
+    note: "analytical; nextAction — an internal instruction to the founder",
+  },
+  {
+    text: "Inference (medium confidence): likely ready for an accelerated pathway given her current role.",
+    expected: "allow",
+    note: "analytical; labeled inference — 'ready' is readiness, and 'role' is descriptive",
+  },
+  {
+    text: "Discovery question: what is your budget range for this programme?",
+    expected: "allow",
+    note: "analytical; a question, not a claim",
+  },
+
+  // --- analytical BLOCK: a real outcome guarantee hiding in internal text ---
+  // All floor-escaping (third person / no "you"), so tier 2 alone must catch
+  // them. If any of these is ALLOWED, the widened scope has cost real recall.
+  {
+    text: "Next action: confirm to the applicant that we will place her in a senior analyst role within 90 days of graduation.",
+    expected: "block",
+    note: "analytical-block; floor-escaping (3rd person) placement promise in a nextAction",
+  },
+  {
+    text: "Given her portfolio, she is certain to receive an offer from one of our hiring partners.",
+    expected: "block",
+    note: "analytical-block; floor-escaping outcome certainty in an inference",
+  },
+  {
+    text: "Strong candidate; we can promise him a data engineering job on completion.",
+    expected: "block",
+    note: "analytical-block; 'promise him' escapes the floor's 'promise you' pattern",
+  },
+  {
+    text: "Recommend telling this applicant that every graduate of the accelerated track walks into employment.",
+    expected: "block",
+    note: "analytical-block; a guarantee the brief instructs the founder to REPEAT outward",
+  },
 ];
