@@ -88,8 +88,25 @@ export const runTranscriptSchema = z
     projection_deferred: z.boolean(),
     model: z.string().min(1),
     usage: z.object({
+      /** UNCACHED prompt tokens only. Total prompt size is
+       * `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`;
+       * a cost figure built on `input_tokens` alone under-reports a cached call. */
       input_tokens: z.number().int().nonnegative(),
       output_tokens: z.number().int().nonnegative(),
+      /**
+       * Prompt-cache accounting, OPTIONAL on purpose.
+       *
+       * Absent and zero mean different things, and the difference is the whole
+       * point of recording them: ABSENT is "this transcript predates cache
+       * accounting, nothing was measured"; ZERO is "measured, and nothing was
+       * served from cache" — which per the CLAUDE.md Claude-API standard means
+       * a silent invalidator or a prefix under the model's cacheable minimum,
+       * not a working cache. Collapsing the two into a required-with-default-0
+       * field would erase the only signal F-N needs, and would break parsing of
+       * the run-1..4 transcripts already on disk.
+       */
+      cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+      cache_read_input_tokens: z.number().int().nonnegative().optional(),
     }),
     latency_ms: z.number().nonnegative(),
     /** Populated only when `status === "error"`. */

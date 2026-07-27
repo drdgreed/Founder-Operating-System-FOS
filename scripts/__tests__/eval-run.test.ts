@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runTranscriptSchema } from "@fos/contracts";
-import { runEvalSuite, stripEmptyAnthropicEnv } from "../eval-run.js";
+import { runEvalSuite, stripEmptyAnthropicEnv, StubModelClient } from "../eval-run.js";
 
 describe("eval runner (dry-run)", () => {
   it("FOS1-EVALRUN-01: emits one schema-valid transcript per fixture", async () => {
@@ -102,5 +102,47 @@ describe("P1.10c — live-mode plumbing", () => {
     // which client it was handed, so reading the row alone would misattribute
     // stub-generated output to a real model and corrupt the grader's record.
     expect(new Set(transcripts.map((t) => t.model))).toEqual(new Set(["stub"]));
+  }, 120_000);
+
+  it("FOS1-EVALRUN-10: an injected client's cache accounting reaches the transcript (F-N)", async () => {
+    // The reason this test exists: `AnthropicModelClient` reports cache tokens
+    // and `pipeline.ts` writes them to `agent_run.costJson`, but the transcript
+    // is what SURVIVES a run — the eval database is a fresh PGlite instance
+    // that is closed and discarded per fixture. Before P1.10o the transcript
+    // dropped both fields, so a live run collected the data and threw it away,
+    // and F-N could not be answered no matter how much was spent on it.
+    //
+    // Zod strips unknown keys from a non-strict object SILENTLY, so a schema
+    // change alone proves nothing about the runner. This asserts the value
+    // makes it all the way out.
+    class CachingStub extends StubModelClient {
+      override async generateStructured() {
+        const result = await super.generateStructured();
+        return {
+          ...result,
+          usage: {
+            inputTokens: 300,
+            outputTokens: 120,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 1081,
+          },
+        };
+      }
+    }
+
+    const transcripts = await runEvalSuite({
+      agentKey: "fos.enrollment_brief",
+      repetitions: 1,
+      modelClient: new CachingStub(),
+    });
+
+    // Only runs that reached the model carry the fields; a gate-blocked run
+    // before stage 5 legitimately has none.
+    const withUsage = transcripts.filter((t) => t.usage.output_tokens > 0);
+    expect(withUsage.length).toBeGreaterThan(0);
+    for (const t of withUsage) {
+      expect(t.usage.cache_read_input_tokens).toBe(1081);
+      expect(t.usage.cache_creation_input_tokens).toBe(0);
+    }
   }, 120_000);
 });

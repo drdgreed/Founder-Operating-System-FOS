@@ -75,7 +75,7 @@ const TRIGGER = { type: "eval", source: "fos-evals" } as const;
  * exercised against a real structured payload — the harness plumbing is what
  * is under test, not the model.
  */
-class StubModelClient implements ModelClient {
+export class StubModelClient implements ModelClient {
   async generateStructured(): Promise<GenerateStructuredResult> {
     return {
       output: {
@@ -265,9 +265,20 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
         const runUsage = ((runRow?.costJson ?? null) as {
           inputTokens?: number;
           outputTokens?: number;
+          cacheCreationInputTokens?: number;
+          cacheReadInputTokens?: number;
         } | null) ?? { inputTokens: 0, outputTokens: 0 };
         const usageInput = runUsage.inputTokens ?? 0;
         const usageOutput = runUsage.outputTokens ?? 0;
+        // Carried through ONLY for a run that actually called the model. A stub
+        // run reporting a measured cache-read of 0 would look exactly like a
+        // live run whose cache never hit — the one comparison F-N turns on.
+        const usageCache = usedRealModel
+          ? {
+              cache_creation_input_tokens: runUsage.cacheCreationInputTokens ?? 0,
+              cache_read_input_tokens: runUsage.cacheReadInputTokens ?? 0,
+            }
+          : {};
 
         let artifact: RunTranscript["artifact"] = null;
         if (result?.artifact) {
@@ -322,6 +333,7 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           usage: {
             input_tokens: usageInput,
             output_tokens: usageOutput,
+            ...usageCache,
           },
           latency_ms: latencyMs,
           error: errorMessage ?? (result?.status === "error" ? (result.reason ?? "error") : null),
@@ -480,6 +492,31 @@ async function main() {
   }, {});
   console.log(`eval-run: ${transcripts.length} transcript(s) for ${args.agentKey}`);
   console.log(`eval-run: status counts ${JSON.stringify(byStatus)}`);
+
+  // Prompt-cache verdict, printed rather than left for someone to dig out of
+  // the JSONL. CLAUDE.md's Claude-API standard requires checking the read rate
+  // before caching is called done: a zero read across repeated identical-prefix
+  // calls is a silent invalidator, not a working cache (F-N).
+  const measured = transcripts.filter((t) => t.usage.cache_read_input_tokens !== undefined);
+  if (measured.length > 0) {
+    const read = measured.reduce((sum, t) => sum + (t.usage.cache_read_input_tokens ?? 0), 0);
+    const written = measured.reduce(
+      (sum, t) => sum + (t.usage.cache_creation_input_tokens ?? 0),
+      0,
+    );
+    const uncached = measured.reduce((sum, t) => sum + t.usage.input_tokens, 0);
+    console.log(
+      `eval-run: prompt cache — ${read} tok read, ${written} tok written, ${uncached} tok uncached ` +
+        `across ${measured.length} run(s) that called the model.`,
+    );
+    console.log(
+      read > 0
+        ? "eval-run: cache is HITTING. F-N answered — record the read rate in the follow-ups doc."
+        : "eval-run: cache read is ZERO. Either the stable prefix is under the model's cacheable\n" +
+            "eval-run: minimum (1024 tok on Sonnet 5 — the classifier prefix was only ESTIMATED at ~1081),\n" +
+            "eval-run: or something ahead of the breakpoint varies per request. Do not call caching done.",
+    );
+  }
   if (args.outDir)
     console.log(`eval-run: written to ${join(args.outDir, `${args.agentKey}.jsonl`)}`);
 }
