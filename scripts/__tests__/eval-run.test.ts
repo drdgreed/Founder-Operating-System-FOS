@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { runTranscriptSchema } from "@fos/contracts";
+import { runTranscriptSchema, transcriptKey } from "@fos/contracts";
 import { runEvalSuite, stripEmptyAnthropicEnv, StubModelClient } from "../eval-run.js";
+import type {
+  ModelClient,
+  GenerateStructuredResult,
+} from "../../packages/agents/src/model-client.js";
 
 describe("eval runner (dry-run)", () => {
   it("FOS1-EVALRUN-01: emits one schema-valid transcript per fixture", async () => {
@@ -145,4 +149,115 @@ describe("P1.10c — live-mode plumbing", () => {
       expect(t.usage.cache_creation_input_tokens).toBe(0);
     }
   }, 120_000);
+});
+
+describe("F-C: the transcript states the runner had never produced", () => {
+  // `evaluation_failed`, `error` and `retry_count > 0` had never appeared in a
+  // transcript, so the grader was about to be written against fields nothing
+  // had ever populated. FOS1-EVALRUN-07 asserts the error path is ABSENT on a
+  // healthy run; it never asserted the path is CORRECT when taken.
+  //
+  // All three are reachable through the injected modelClient seam, so none of
+  // this needs a live call.
+
+  /** Always returns output that cannot satisfy the definition's Zod schema. */
+  class AlwaysInvalidClient implements ModelClient {
+    calls = 0;
+    async generateStructured(): Promise<GenerateStructuredResult> {
+      this.calls++;
+      return { output: { not: "a brief" }, usage: { inputTokens: 1, outputTokens: 1 } };
+    }
+  }
+
+  /** Invalid on the FIRST attempt per run, valid on the repair retry. */
+  class RepairsOnRetryClient implements ModelClient {
+    private readonly stub = new StubModelClient();
+    private seen = 0;
+    async generateStructured(): Promise<GenerateStructuredResult> {
+      this.seen++;
+      // Odd call = first attempt of a run -> invalid; even = the repair.
+      if (this.seen % 2 === 1) {
+        return { output: { not: "a brief" }, usage: { inputTokens: 1, outputTokens: 1 } };
+      }
+      return this.stub.generateStructured();
+    }
+  }
+
+  class ThrowingClient implements ModelClient {
+    async generateStructured(): Promise<GenerateStructuredResult> {
+      throw new Error("model unreachable (injected)");
+    }
+  }
+
+  it("FOS1-EVALRUN-11: schema-invalid output twice produces evaluation_failed with retry_count 1", async () => {
+    const client = new AlwaysInvalidClient();
+    const transcripts = await runEvalSuite({
+      agentKey: "fos.enrollment_brief",
+      repetitions: 1,
+      modelClient: client,
+    });
+
+    expect(new Set(transcripts.map((t) => t.status))).toEqual(new Set(["evaluation_failed"]));
+    // The repair retry is what distinguishes this from a single failed parse.
+    for (const t of transcripts) {
+      expect(t.retry_count, `${t.fixture_id} should record the repair attempt`).toBe(1);
+      expect(t.artifact, `${t.fixture_id} must not produce an artifact`).toBeNull();
+    }
+    // Two model calls per fixture: the attempt and the repair.
+    expect(client.calls).toBe(transcripts.length * 2);
+  }, 120_000);
+
+  it("FOS1-EVALRUN-12: a run that repairs on retry SUCCEEDS and still records retry_count 1", async () => {
+    // The distinction the grader needs: retry_count > 0 is not itself a
+    // failure. A run can recover and be perfectly valid.
+    const transcripts = await runEvalSuite({
+      agentKey: "fos.enrollment_brief",
+      repetitions: 1,
+      modelClient: new RepairsOnRetryClient(),
+    });
+
+    const succeeded = transcripts.filter((t) => t.status === "succeeded");
+    expect(succeeded.length).toBeGreaterThan(0);
+    for (const t of succeeded) expect(t.retry_count).toBe(1);
+  }, 120_000);
+
+  it("FOS1-EVALRUN-13: a throwing model client produces status error with a message", async () => {
+    const transcripts = await runEvalSuite({
+      agentKey: "fos.enrollment_brief",
+      repetitions: 1,
+      modelClient: new ThrowingClient(),
+    });
+
+    expect(new Set(transcripts.map((t) => t.status))).toEqual(new Set(["error"]));
+    for (const t of transcripts) {
+      // The message must survive to the transcript — an `error` row with a null
+      // message is what made live run 4 take so long to diagnose.
+      expect(t.error, `${t.fixture_id} must carry the failure message`).toBeTruthy();
+      expect(t.error).toContain("model unreachable (injected)");
+      expect(t.artifact).toBeNull();
+    }
+  }, 120_000);
+
+  it("FOS1-EVALRUN-14: every transcript from a failing run is still schema-valid", async () => {
+    // The grader parses these. A failure path that emits an UNPARSEABLE
+    // transcript would take the grader down with it.
+    for (const client of [new AlwaysInvalidClient(), new ThrowingClient()]) {
+      const transcripts = await runEvalSuite({
+        agentKey: "fos.enrollment_brief",
+        repetitions: 1,
+        modelClient: client,
+      });
+      for (const t of transcripts) {
+        expect(() => runTranscriptSchema.parse(t)).not.toThrow();
+      }
+    }
+  }, 240_000);
+
+  it("FOS1-EVALRUN-15: transcriptKey is unique across a whole suite; run_id must not be relied on", async () => {
+    // Complements the contract-level test: on a REAL suite the key is unique
+    // for every emitted row, which is what lets the grader join on it.
+    const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 2 });
+    const keys = transcripts.map((t) => transcriptKey(t));
+    expect(new Set(keys).size, "transcriptKey collided within one suite").toBe(transcripts.length);
+  }, 240_000);
 });

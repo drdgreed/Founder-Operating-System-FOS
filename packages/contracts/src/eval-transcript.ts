@@ -135,3 +135,31 @@ export const runTranscriptSchema = z
   });
 
 export type RunTranscript = z.infer<typeof runTranscriptSchema>;
+
+/**
+ * The run_id emitted when `runAgent` threw BEFORE inserting its `agent_run`
+ * row — a stage-1 validation failure, where the thrown Error carries only a
+ * message and no run id.
+ *
+ * Unavoidable, and it means run_id is NOT UNIQUE within a transcript file:
+ * every run that fails that early carries this same value.
+ */
+export const PLACEHOLDER_RUN_ID = "00000000-0000-4000-8000-000000000000";
+
+/**
+ * THE GRADER'S PRIMARY KEY (F-B). Use this — never run_id.
+ *
+ * A grader keyed on run_id looks correct on every healthy transcript file and
+ * silently collapses rows on exactly the runs worth investigating, because
+ * PLACEHOLDER_RUN_ID repeats. The pair (fixture_id, repetition) is unique by
+ * construction: the runner's loop is `for each fixture { for each repetition }`.
+ *
+ * Exported as a function rather than written down as a rule, so the contract is
+ * something the grader IMPORTS instead of something a reader has to remember.
+ */
+export function transcriptKey(
+  transcript: Pick<RunTranscript, "fixture_id" | "repetition">,
+): string {
+  // A fixture_id cannot contain whitespace, so this join is unambiguous.
+  return transcript.fixture_id + " " + String(transcript.repetition);
+}

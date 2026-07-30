@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runTranscriptSchema } from "./eval-transcript.js";
+import { runTranscriptSchema, transcriptKey, PLACEHOLDER_RUN_ID } from "./eval-transcript.js";
 
 const VALID = {
   fixture_id: "enrollment_brief.strong_fit",
@@ -124,5 +124,44 @@ describe("runTranscriptSchema", () => {
         }),
       ).toThrow();
     }
+  });
+});
+
+describe("F-B: transcriptKey is the grader's primary key, not run_id", () => {
+  it("FOS1-EVALTX-08: two early-failure transcripts COLLIDE on run_id but not on the key", () => {
+    // The whole reason this helper exists. `runAgent` can throw before it
+    // inserts an agent_run row — the thrown Error carries a message and no id —
+    // so the runner emits PLACEHOLDER_RUN_ID. Every run that fails that early
+    // carries the SAME run_id.
+    //
+    // A grader keyed on run_id is correct on every healthy file and silently
+    // collapses rows on precisely the runs worth investigating.
+    const a = runTranscriptSchema.parse({
+      ...VALID,
+      fixture_id: "enrollment_brief.alpha",
+      status: "error",
+      artifact: null,
+      run_id: PLACEHOLDER_RUN_ID,
+      error: "input validation failed",
+    });
+    const b = runTranscriptSchema.parse({
+      ...VALID,
+      fixture_id: "enrollment_brief.beta",
+      status: "error",
+      artifact: null,
+      run_id: PLACEHOLDER_RUN_ID,
+      error: "input validation failed",
+    });
+
+    expect(a.run_id).toBe(b.run_id);
+    expect(new Set([a.run_id, b.run_id]).size).toBe(1);
+    expect(transcriptKey(a)).not.toBe(transcriptKey(b));
+    expect(new Set([transcriptKey(a), transcriptKey(b)]).size).toBe(2);
+  });
+
+  it("FOS1-EVALTX-09: repetitions of one fixture are distinguished by the key", () => {
+    const r0 = runTranscriptSchema.parse({ ...VALID, repetition: 0 });
+    const r1 = runTranscriptSchema.parse({ ...VALID, repetition: 1 });
+    expect(transcriptKey(r0)).not.toBe(transcriptKey(r1));
   });
 });
