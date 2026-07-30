@@ -237,16 +237,58 @@ export const fosEnrollmentBriefAgentDefinition: AgentDefinition<
   // otherwise reaches canonical state via an observedFact/inference/riskFlag/
   // unknown statement. Same fields the old gate's `selectText` scanned — keep
   // this list in sync with `buildBodyMarkdown` below.
+  // Every field here is tagged with the VOICE it is written in, which decides
+  // whether the tier-1 floor may rule FINALLY on it (F-K). Coverage is
+  // unchanged — every text is still classified. Only the appeal path differs.
+  //
+  //   own_voice     — the agent asserting something. Full floor, unappealable.
+  //   reports_input — a field whose PURPOSE is to describe untrusted input, so
+  //                   a `guarantee` near an employment noun means the agent is
+  //                   REPORTING a guarantee, not making one. Floor escalates to
+  //                   tier 2 instead of blocking.
+  //
+  // `inferences` is deliberately own_voice: it is the agent's own reasoning and
+  // the most plausible place for a smuggled outcome promise ("she is certain to
+  // receive an offer" is a corpus BLOCK row, and it lives in an inference).
+  //
+  // This costs no TESTED floor coverage: FOS1-GCLS-corpus-03 asserts every
+  // analytical-block corpus row is already floor-ESCAPING, so tier 2 was
+  // demonstrably the only defense for analytical text before this change.
   complianceReviewText: (output) => [
-    output.candidateSummary,
-    output.fitRationale,
-    output.nextAction,
-    ...output.objections,
-    ...output.discoveryQuestions,
-    ...output.observedFacts.map((f) => f.statement),
-    ...output.inferences.map((i) => i.statement),
-    ...output.riskFlags,
-    ...output.unknowns,
+    { text: output.candidateSummary, field: "candidateSummary", voice: "own_voice" as const },
+    { text: output.fitRationale, field: "fitRationale", voice: "own_voice" as const },
+    { text: output.nextAction, field: "nextAction", voice: "own_voice" as const },
+    ...output.objections.map((text) => ({
+      text,
+      field: "objections",
+      voice: "own_voice" as const,
+    })),
+    ...output.discoveryQuestions.map((text) => ({
+      text,
+      field: "discoveryQuestions",
+      voice: "own_voice" as const,
+    })),
+    ...output.inferences.map((i) => ({
+      text: i.statement,
+      field: "inferences",
+      voice: "own_voice" as const,
+    })),
+    // --- reports_input: these three exist to describe the run's input --------
+    ...output.observedFacts.map((f) => ({
+      text: f.statement,
+      field: "observedFacts",
+      voice: "reports_input" as const,
+    })),
+    ...output.riskFlags.map((text) => ({
+      text,
+      field: "riskFlags",
+      voice: "reports_input" as const,
+    })),
+    ...output.unknowns.map((text) => ({
+      text,
+      field: "unknowns",
+      voice: "reports_input" as const,
+    })),
   ],
   artifact: {
     // FLAG: spec §7.1 names a dedicated `enrollment_brief` artifact_type, but
