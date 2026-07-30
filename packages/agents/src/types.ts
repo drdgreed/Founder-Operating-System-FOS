@@ -51,7 +51,60 @@ export interface ComplianceReviewDecision {
  * classifier calls through the generation `FakeModelClient` (the two model
  * seams stay decoupled).
  */
-export type ComplianceReviewer = (text: string) => Promise<ComplianceReviewDecision>;
+export type ComplianceReviewer = (
+  text: string,
+  options?: ComplianceReviewOptions,
+) => Promise<ComplianceReviewDecision>;
+
+export interface ComplianceReviewOptions {
+  /**
+   * May the tier-1 regex floor return a FINAL block for this text?
+   *
+   * `true` (the default) is today's behaviour: a floor match is unappealable.
+   * `false` means a floor match ESCALATES to the tier-2 semantic classifier
+   * instead — never that the text is allowed. See `ComplianceReviewText.voice`.
+   */
+  floorIsFinal?: boolean;
+}
+
+/**
+ * A reviewable text plus the PROVENANCE the floor policy is derived from.
+ *
+ * Exists because of F-K. The tier-1 floor is a proximity regex: it fires on
+ * `guarantee` near an employment noun. That is correct for a sentence the agent
+ * ASSERTS, and wrong for one that DESCRIBES its input — and three consecutive
+ * live runs blocked the `prompt_injection` fixture on the agent's own correct
+ * report of the attack it had just detected ("...attempting to force ... a
+ * guaranteed job/interview"). A floor block is final, so tier 2 could never
+ * correct it.
+ *
+ * The rejected alternative was a lexical attribution guard (`contains`,
+ * `demands`, `says`). It fails for two reasons found while designing this:
+ * an assertion can be laundered by APPENDING one ("We guarantee a job, as the
+ * brochure says."), and attribution verbs are open-class content words that
+ * frequently are not attribution at all ("Our program contains a guaranteed
+ * interview slot"). It would also be a judgment-maintained list guarding the
+ * one unappealable check — the P-004 shape, in the worst possible place.
+ *
+ * Field provenance is instead MECHANICAL: a definition already knows which of
+ * its output fields exist to describe untrusted input, because it declares
+ * them. The signal comes from the schema, not from guessing at English.
+ */
+export interface ComplianceReviewText {
+  text: string;
+  /** The output field this came from. Diagnostics, and the anti-drift check. */
+  field: string;
+  /**
+   * - `own_voice` — the agent asserting something itself. FULL floor applies.
+   * - `reports_input` — a field whose PURPOSE is to describe untrusted input.
+   *   The floor may not rule finally here; tier 2 (which reads meaning) decides.
+   *
+   * A bare `string` normalises to `own_voice`, so an untagged definition keeps
+   * exactly today's behaviour. That default is the FAIL-SAFE direction: the
+   * cost of forgetting to tag is a possible false block, never a missed one.
+   */
+  voice: "own_voice" | "reports_input";
+}
 
 export interface RunAgentDeps {
   db: Db;
@@ -161,7 +214,7 @@ export interface AgentDefinition<TInput, TOutput> {
    * the stage cleanly. Select ONLY Zod-validated output fields (never raw
    * prompt/input), exactly like a gate (D9).
    */
-  complianceReviewText?: (output: TOutput) => ReadonlyArray<string>;
+  complianceReviewText?: (output: TOutput) => ReadonlyArray<string | ComplianceReviewText>;
   /**
    * Optional closed vocabularies for output fields whose legal values come from
    * the run's input (P1.10e). Surfaced to the model in the prompt's user turn;

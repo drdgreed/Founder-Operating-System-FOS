@@ -598,3 +598,77 @@ describe("fos.enrollment_brief (issue #53) — the first real business agent", (
     expect(await ctx.db.select().from(artifactVersion)).toHaveLength(0);
   });
 });
+
+describe("F-K: compliance-text VOICE tagging is mechanically checkable", () => {
+  // P-004 in its intended form. The floor policy is now derived from field
+  // provenance, so the tags themselves become the thing that can silently
+  // drift. These assert the tags against the SCHEMA rather than against
+  // anyone's memory of which fields exist.
+  const OUTPUT: EnrollmentBriefOutput = {
+    candidateSummary: "A summary.",
+    observedFacts: [{ statement: "A fact.", sourceRef: "person.current_role" }],
+    inferences: [{ statement: "An inference.", confidence: "medium" }],
+    unknowns: ["An unknown."],
+    readiness: "ready_now",
+    fitStatus: "strong_fit",
+    fitConfidence: "medium",
+    fitRationale: "A rationale.",
+    recommendedPathway: "accelerated_track",
+    objections: ["An objection."],
+    discoveryQuestions: ["A question?"],
+    riskFlags: ["A risk."],
+    nextAction: "An action.",
+  };
+
+  const entries = fosEnrollmentBriefAgentDefinition.complianceReviewText!(OUTPUT);
+  const tagged = entries.filter((e) => typeof e !== "string");
+
+  it("FOS1-EB-VOICE-01: every entry is tagged — no bare strings slipped through", () => {
+    // A bare string silently defaults to own_voice. That is the right default
+    // for an unmigrated definition, but in a MIGRATED one it means a field was
+    // added without a decision being made about its voice.
+    expect(entries.filter((e) => typeof e === "string")).toEqual([]);
+  });
+
+  it("FOS1-EB-VOICE-02: every tagged field name is a real key of the output schema", () => {
+    const schemaKeys = new Set(Object.keys(enrollmentBriefOutputSchema.shape));
+    const unknown = [...new Set(tagged.map((e) => e.field))].filter((f) => !schemaKeys.has(f));
+    expect(unknown, `field names not present in the output schema: ${unknown.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("FOS1-EB-VOICE-03: the reports_input set is PINNED — widening it removes floor coverage", () => {
+    // Every field moved into reports_input gives up the unappealable tier-1
+    // block for that field. That is a deliberate safety trade, never a drive-by
+    // edit, so the exact set is pinned here and must be changed on purpose.
+    const reportsInput = [
+      ...new Set(tagged.filter((e) => e.voice === "reports_input").map((e) => e.field)),
+    ].sort();
+    expect(reportsInput).toEqual(["observedFacts", "riskFlags", "unknowns"]);
+  });
+
+  it("FOS1-EB-VOICE-04: inferences stay own_voice — it is where a smuggled promise would live", () => {
+    // "Given her portfolio, she is certain to receive an offer from one of our
+    // hiring partners." is a corpus BLOCK row, and it is phrased as an
+    // inference. Inferences are the agent's own reasoning, not a description of
+    // its input, so they keep the full floor.
+    const inferenceVoices = tagged.filter((e) => e.field === "inferences").map((e) => e.voice);
+    expect(inferenceVoices).toEqual(["own_voice"]);
+  });
+
+  it("FOS1-EB-VOICE-05: every free-text output field is still SCANNED — coverage is unchanged", () => {
+    // The fix changes the appeal path, never the coverage. This enumerates the
+    // schema mechanically and requires each free-text field to appear; the
+    // remaining fields are closed Zod enums, which cannot carry a guarantee.
+    const CLOSED_ENUM_FIELDS = ["readiness", "fitStatus", "fitConfidence", "recommendedPathway"];
+    const scanned = new Set(tagged.map((e) => e.field));
+    const missing = Object.keys(enrollmentBriefOutputSchema.shape).filter(
+      (k) => !CLOSED_ENUM_FIELDS.includes(k) && !scanned.has(k),
+    );
+    expect(
+      missing,
+      `free-text fields rendered but never classified: ${missing.join(", ")}`,
+    ).toEqual([]);
+  });
+});

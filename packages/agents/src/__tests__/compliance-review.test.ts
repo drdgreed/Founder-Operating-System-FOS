@@ -4,7 +4,13 @@ import { z } from "zod";
 import { agentRun, artifactRecord, artifactVersion } from "@fos/db/schema";
 import { runAgent } from "../pipeline.js";
 import { featureModeAllowedGate } from "../gates/feature-mode-allowed.js";
-import { GUARANTEE_CLASSIFIER_SYSTEM_PROMPT } from "../gates/guarantee-classifier.js";
+import {
+  GUARANTEE_CLASSIFIER_SYSTEM_PROMPT,
+  tier1FloorBlock,
+  evaluateGuaranteeText,
+} from "../gates/guarantee-classifier.js";
+import { normaliseComplianceTexts } from "../pipeline.js";
+import type { ModelClient } from "../model-client.js";
 import type { AgentDefinition, RunAgentContext } from "../types.js";
 import type { FeatureMode } from "../mode.js";
 import { createTestDb, seedWorkspace, setFeatureFlag } from "./test-db.js";
@@ -558,5 +564,143 @@ describe("stage-7b cost accounting (P1.10m — F-J)", () => {
     } finally {
       await ctx.close();
     }
+  });
+});
+
+describe("F-K: field provenance decides whether the tier-1 floor may rule FINALLY", () => {
+  // Three consecutive live runs (3, 6, 7) blocked the `prompt_injection`
+  // fixture on the agent's own correct REPORT of the attack it had detected —
+  // "...attempting to force ... a guaranteed job/interview". The floor is a
+  // proximity regex; it cannot tell asserting from describing. A floor block is
+  // final, so tier 2 could never correct it.
+  //
+  // The fix is structural, not lexical: a definition already knows which of its
+  // output fields exist to describe untrusted input. See ComplianceReviewText.
+
+  const RUN_7_OBSERVED_FACT =
+    "The application's raw payload note field contains text attempting to instruct the system to " +
+    "override deterministic gates, force a 'strong_fit' status, force an 'accelerated_track' " +
+    "recommendation, guarantee a job/interview, and auto-approve the application.";
+
+  it("FOS1-CR-FK-01: the run-7 text still trips the floor — the regex is unchanged", () => {
+    // The fix must NOT work by weakening the patterns. If this ever stops
+    // firing, the floor was narrowed and this whole slice is the wrong story.
+    expect(tier1FloorBlock(RUN_7_OBSERVED_FACT)).not.toBeNull();
+  });
+
+  it("FOS1-CR-FK-02: from a reports_input field it ESCALATES to tier 2 instead of blocking", async () => {
+    const seen: string[] = [];
+    const model: ModelClient = {
+      generateStructured: async (input) => {
+        seen.push(input.userContent);
+        return {
+          output: {
+            verdict: "allow",
+            confidence: "high",
+            reason: "describes an attack, promises nothing",
+          },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const decision = await evaluateGuaranteeText(
+      RUN_7_OBSERVED_FACT,
+      { model },
+      { floorIsFinal: false },
+    );
+    expect(decision.tier).toBe("tier2-classifier");
+    expect(decision.verdict).toBe("allow");
+    // Escalation means the classifier ACTUALLY ran on this text.
+    expect(seen).toHaveLength(1);
+  });
+
+  it("FOS1-CR-FK-03: escalation is not an allow — tier 2 still blocks a real guarantee", async () => {
+    // The load-bearing property. Losing the final floor must cost RECALL of
+    // nothing: tier 2 is the primary defense and it still rules.
+    const model: ModelClient = {
+      generateStructured: async () => ({
+        output: { verdict: "block", confidence: "high", reason: "acquired employment outcome" },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    };
+    const decision = await evaluateGuaranteeText(
+      "we guarantee you a job",
+      { model },
+      { floorIsFinal: false },
+    );
+    expect(decision.verdict).toBe("block");
+  });
+
+  it("FOS1-CR-FK-04: a fail-closed tier 2 still blocks an escalated text", async () => {
+    // Escalation must not become an availability hole: if the classifier is
+    // unreachable, an escalated text blocks exactly like any other.
+    const model: ModelClient = {
+      generateStructured: async () => {
+        throw new Error("classifier unreachable");
+      },
+    };
+    const decision = await evaluateGuaranteeText(
+      RUN_7_OBSERVED_FACT,
+      { model },
+      { floorIsFinal: false },
+    );
+    expect(decision.verdict).toBe("block");
+  });
+
+  it("FOS1-CR-FK-05: own_voice is the DEFAULT — omitting the option keeps the final floor", () => {
+    // The fail-safe direction. An untagged definition, or a caller that forgets
+    // the option, gets exactly today's behaviour.
+    return Promise.all([
+      evaluateGuaranteeText(RUN_7_OBSERVED_FACT, {
+        model: {
+          generateStructured: async () => {
+            throw new Error("must not be called");
+          },
+        },
+      }),
+    ]).then(([decision]) => {
+      expect(decision.tier).toBe("tier1-floor");
+      expect(decision.verdict).toBe("block");
+    });
+  });
+});
+
+describe("F-K: normaliseComplianceTexts", () => {
+  it("FOS1-CR-FK-06: a bare string normalises to own_voice, the fail-safe default", () => {
+    expect(normaliseComplianceTexts(["hello"])).toEqual([
+      { text: "hello", field: "(untagged)", voice: "own_voice" },
+    ]);
+  });
+
+  it("FOS1-CR-FK-07: empty and whitespace-only entries are dropped", () => {
+    expect(
+      normaliseComplianceTexts([
+        "",
+        "   ",
+        { text: "  ", field: "riskFlags", voice: "reports_input" },
+        "real",
+      ]),
+    ).toEqual([{ text: "real", field: "(untagged)", voice: "own_voice" }]);
+  });
+
+  it("FOS1-CR-FK-08: dedupe keeps the STRICTER voice when a text appears in both", () => {
+    // If a string is both asserted and described, it must be reviewed once
+    // under the own_voice policy. Keying dedupe on (text, voice) instead would
+    // let a genuinely-asserted guarantee escape the final floor just because it
+    // also appeared in a descriptive field.
+    const both = normaliseComplianceTexts([
+      { text: "we guarantee you a job", field: "observedFacts", voice: "reports_input" },
+      { text: "we guarantee you a job", field: "nextAction", voice: "own_voice" },
+    ]);
+    expect(both).toHaveLength(1);
+    expect(both[0]!.voice).toBe("own_voice");
+
+    // ...and in the other declaration order.
+    const reversed = normaliseComplianceTexts([
+      { text: "we guarantee you a job", field: "nextAction", voice: "own_voice" },
+      { text: "we guarantee you a job", field: "observedFacts", voice: "reports_input" },
+    ]);
+    expect(reversed).toHaveLength(1);
+    expect(reversed[0]!.voice).toBe("own_voice");
   });
 });

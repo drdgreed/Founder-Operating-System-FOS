@@ -475,10 +475,22 @@ export async function classifyGuarantee(
 export async function evaluateGuaranteeText(
   text: string,
   deps: GuaranteeClassifierDeps,
+  options?: { floorIsFinal?: boolean },
 ): Promise<GuaranteeDecisionWithTier> {
   try {
+    // F-K. `floorIsFinal: false` is set for text from a field whose PURPOSE is
+    // to describe untrusted input, where a proximity match means the agent is
+    // REPORTING a guarantee rather than making one. The floor still runs — we
+    // simply decline to let it rule finally, and hand the text to tier 2, which
+    // reads meaning. This is an ESCALATION, never an allow: tier 2 fails closed
+    // on error, timeout, schema-invalid response, and low confidence.
+    //
+    // Deliberately no hint is passed down about the floor having matched. That
+    // text is derived from untrusted input, and turning it into a signal that
+    // steers the classifier is the D9 boundary this whole design defends.
+    const floorIsFinal = options?.floorIsFinal ?? true;
     const floor = tier1FloorBlock(text);
-    if (floor) {
+    if (floor && floorIsFinal) {
       return { ...floor, tier: "tier1-floor" };
     }
     const decision = await classifyGuarantee(text, deps);

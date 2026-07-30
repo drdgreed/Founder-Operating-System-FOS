@@ -10,7 +10,13 @@ import { effectiveMode, type FeatureMode } from "./mode.js";
 import { DEFAULT_MODEL, type ModelUsage } from "./model-client.js";
 import { buildPrompt, buildRepairPrompt } from "./prompt.js";
 import { zodToJsonSchema } from "./schema-to-json.js";
-import type { AgentDefinition, RunAgentContext, RunAgentDeps } from "./types.js";
+import type {
+  AgentDefinition,
+  RunAgentContext,
+  RunAgentDeps,
+  ComplianceReviewText,
+  ComplianceReviewOptions,
+} from "./types.js";
 
 export type AgentRunStatus = "succeeded" | "evaluation_failed" | "policy_blocked" | "error";
 
@@ -46,9 +52,44 @@ export const DEFAULT_COMPLIANCE_REVIEW_CONCURRENCY = 6;
  *     Texts BEFORE it are already in flight and are allowed to finish, which is
  *     precisely what makes property 2 hold.
  */
+/**
+ * Normalise a definition's compliance texts: tag bare strings as `own_voice`,
+ * drop empty/whitespace entries, and dedupe.
+ *
+ * Empty strings are skipped because optional fields often yield "" — classifying
+ * one wastes a model call and can fail closed to a spurious block. Dedupe stops
+ * a long output firing redundant classifier calls for identical strings.
+ *
+ * DEDUPE IS BY TEXT, AND `own_voice` WINS. If the same string appears from both
+ * an own-voice field and a reports-input one, it is reviewed once under the
+ * STRICTER policy. Keying the dedupe on (text, voice) instead would let a text
+ * that the agent genuinely asserts escape the final floor merely because it also
+ * happens to appear in a descriptive field.
+ */
+export function normaliseComplianceTexts(
+  entries: ReadonlyArray<string | ComplianceReviewText>,
+): ComplianceReviewText[] {
+  const byText = new Map<string, ComplianceReviewText>();
+  for (const entry of entries) {
+    const normalised: ComplianceReviewText =
+      typeof entry === "string" ? { text: entry, field: "(untagged)", voice: "own_voice" } : entry;
+    if (normalised.text.trim().length === 0) continue;
+    const existing = byText.get(normalised.text);
+    if (existing === undefined) {
+      byText.set(normalised.text, normalised);
+    } else if (existing.voice === "reports_input" && normalised.voice === "own_voice") {
+      byText.set(normalised.text, normalised);
+    }
+  }
+  return [...byText.values()];
+}
+
 async function reviewTextsConcurrently(
-  texts: readonly string[],
-  reviewer: (text: string) => Promise<{ verdict: string; reason: string; usage?: ModelUsage }>,
+  texts: readonly ComplianceReviewText[],
+  reviewer: (
+    text: string,
+    options?: ComplianceReviewOptions,
+  ) => Promise<{ verdict: string; reason: string; usage?: ModelUsage }>,
   concurrency: number,
 ): Promise<{ blockReason: string | null; usage: ModelUsage }> {
   type Outcome =
@@ -71,7 +112,10 @@ async function reviewTextsConcurrently(
       if (index >= texts.length || index > stopAfter) return;
       nextIndex += 1;
       try {
-        const decision = await reviewer(texts[index]!);
+        const entry = texts[index]!;
+        const decision = await reviewer(entry.text, {
+          floorIsFinal: entry.voice === "own_voice",
+        });
         if (decision.usage) {
           reviewUsage.inputTokens += decision.usage.inputTokens;
           reviewUsage.outputTokens += decision.usage.outputTokens;
@@ -438,7 +482,8 @@ export async function runAgent<TInput, TOutput>(
     if (definition.complianceReviewText) {
       const reviewer =
         deps.complianceReviewer ??
-        ((text: string) => evaluateGuaranteeText(text, { model: deps.modelClient }));
+        ((text: string, options?: ComplianceReviewOptions) =>
+          evaluateGuaranteeText(text, { model: deps.modelClient }, options));
 
       let complianceBlockReason: string | null = null;
       try {
@@ -446,9 +491,7 @@ export async function runAgent<TInput, TOutput>(
         // removed keyword gate ignored them; classifying "" wastes a model call
         // and can fail closed to a spurious block) and dedupe identical strings
         // so a long output does not fire redundant classifier calls.
-        const texts = [
-          ...new Set(definition.complianceReviewText(output).filter((t) => t.trim().length > 0)),
-        ];
+        const texts = normaliseComplianceTexts(definition.complianceReviewText(output));
         const review = await reviewTextsConcurrently(
           texts,
           reviewer,
