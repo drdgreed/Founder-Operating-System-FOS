@@ -37,7 +37,12 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { evalFixtureV2Schema, runTranscriptSchema, type RunTranscript } from "@fos/contracts";
+import {
+  evalFixtureV2Schema,
+  runTranscriptSchema,
+  type RunTranscript,
+  PLACEHOLDER_RUN_ID,
+} from "@fos/contracts";
 import type { EventActor } from "@fos/contracts";
 import {
   runAgent,
@@ -299,7 +304,7 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           agent_version: definition.version,
           repetition,
           control_for: controlIndex.get(fixture.fixture_id) ?? null,
-          run_id: result?.runId ?? "00000000-0000-4000-8000-000000000000",
+          run_id: result?.runId ?? PLACEHOLDER_RUN_ID,
           status: result?.status ?? "error",
           mode: result?.mode ?? "shadow",
           retry_count: result?.retryCount ?? 0,
