@@ -189,6 +189,37 @@ describe("F-C: the transcript states the runner had never produced", () => {
     }
   }
 
+  it("FOS1-EVALRUN-17: an evaluation_failed transcript records WHY it failed (F-Z)", async () => {
+    // Before this, an evaluation_failed transcript said `error: null,
+    // output: null` and nothing else. The Zod issues went to
+    // agent_run.deterministicEvalJson — into the ephemeral eval database that
+    // is closed and discarded per fixture — so the only surviving artifact
+    // reported THAT validation failed and never WHAT failed.
+    //
+    // That is not academic: F-Y (fos.call_preparation failing stage 6 on a
+    // shuffling subset of fixtures across runs) cannot be diagnosed at all
+    // without these strings.
+    const transcripts = await runEvalSuite({
+      agentKey: "fos.enrollment_brief",
+      repetitions: 1,
+      modelClient: new AlwaysInvalidClient(),
+    });
+
+    const failed = transcripts.filter((t) => t.status === "evaluation_failed");
+    expect(failed.length).toBeGreaterThan(0);
+    for (const t of failed) {
+      expect(t.evaluation_issues, `${t.fixture_id} must record its issues`).toBeDefined();
+      expect(t.evaluation_issues!.length).toBeGreaterThan(0);
+      // Not merely present — actually diagnostic. Each issue names a path.
+      expect(t.evaluation_issues!.every((issue) => issue.includes(":"))).toBe(true);
+    }
+
+    // And the field is absent everywhere it would be meaningless.
+    for (const t of transcripts.filter((t) => t.status !== "evaluation_failed")) {
+      expect(t.evaluation_issues).toBeUndefined();
+    }
+  }, 120_000);
+
   it("FOS1-EVALRUN-11: schema-invalid output twice produces evaluation_failed with retry_count 1", async () => {
     const client = new AlwaysInvalidClient();
     const transcripts = await runEvalSuite({

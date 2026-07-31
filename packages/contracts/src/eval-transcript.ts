@@ -111,8 +111,45 @@ export const runTranscriptSchema = z
     latency_ms: z.number().nonnegative(),
     /** Populated only when `status === "error"`. */
     error: z.string().nullable(),
+    /**
+     * The stage-6 validation failures, as `path: message` strings (F-Z).
+     *
+     * REQUIRED when `status === "evaluation_failed"`, and forbidden otherwise —
+     * see the superRefine below.
+     *
+     * Exists because an `evaluation_failed` transcript previously recorded
+     * `error: null, output: null` and nothing else. The Zod issues were written
+     * to `agent_run.deterministicEvalJson`, in the ephemeral eval database that
+     * is closed and discarded per fixture — so the only artifact that SURVIVES a
+     * run said that validation failed and never what failed. The grader could
+     * not diagnose its own most interesting result.
+     *
+     * Same shape as F-N: collected at one stage, thrown away at the boundary.
+     */
+    evaluation_issues: z.array(z.string()).optional(),
   })
   .superRefine((value, ctx) => {
+    // F-Z, enforced at WRITE time in both directions. A transcript that reports
+    // `evaluation_failed` without saying why is the defect this field exists to
+    // remove, so it must not be constructible; and issues on any other status
+    // would be a runner bug reporting failures for a run that did not fail.
+    if (value.status === "evaluation_failed") {
+      if (!value.evaluation_issues || value.evaluation_issues.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["evaluation_issues"],
+          message:
+            "an evaluation_failed transcript must record the validation issues that caused it",
+        });
+      }
+    } else if (value.evaluation_issues !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evaluation_issues"],
+        message: `evaluation_issues is only meaningful for evaluation_failed, not "${value.status}"`,
+      });
+    }
+
     // The prefix invariant (design §5), enforced at write time so a malformed
     // transcript can never reach the grader.
     if (value.gate_evaluations.length > value.declared_gate_keys.length) {
