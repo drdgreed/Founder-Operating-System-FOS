@@ -173,6 +173,16 @@ export type CallPreparationOutput = z.infer<typeof callPreparationOutputSchema>;
 
 // ---- Definition ------------------------------------------------------------
 
+/**
+ * The ONLY sourceRefs `facts-resolve-to-sources` will accept. Defined once and
+ * consumed by BOTH the gate and `promptVocabularies` below, so the model is
+ * shown exactly what the gate enforces (P-004: a judgment-maintained pair of
+ * lists drifts silently).
+ */
+function selectCitableSourceRefs(input: CallPreparationInput): string[] {
+  return input.evidenceRecords.map((r) => r.sourceRef);
+}
+
 export const FOS_CALL_PREPARATION_AGENT_KEY = "fos.call_preparation";
 export const FOS_CALL_PREPARATION_FEATURE_FLAG_KEY = "fos.call_preparation";
 
@@ -200,6 +210,22 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
   ],
   autonomyCeiling: "review",
   featureFlagKey: FOS_CALL_PREPARATION_FEATURE_FLAG_KEY,
+  /**
+   * #127, propagated here by P1.10d-4 after live run 10 blocked 7 of 7 briefs.
+   *
+   * The model cited `opportunity.stage`, `interaction.scheduledAt` and
+   * `availableClaims` — all REAL input fields — while the gate accepts only
+   * `evidenceRecords[].sourceRef` spellings. It was grounding honestly against
+   * a vocabulary nobody had shown it. That is live run 1 verbatim, on a
+   * different agent, and the fix had lived in one definition since #127.
+   */
+  promptVocabularies: (input) => [
+    { field: "observedFacts[].sourceRef", allowed: selectCitableSourceRefs(input) },
+    // Not gate-enforced (a gate cannot verify a claim is APPROVED, only that it
+    // came from this set) — the stage-7b review is the safety net. Surfacing it
+    // still stops the model inventing claims the founder may not make.
+    { field: "permittedClaims", allowed: input.availableClaims },
+  ],
   deterministicGates: [
     featureModeAllowedGate({
       key: "fos.call_preparation.mode-allowed",
@@ -208,7 +234,7 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
     factsResolveToSourcesGate<CallPreparationInput, CallPreparationOutput>({
       key: "fos.call_preparation.facts-resolve-to-sources",
       selectObservedFacts: (output) => output.observedFacts,
-      selectValidSourceRefs: (input) => input.evidenceRecords.map((r) => r.sourceRef),
+      selectValidSourceRefs: selectCitableSourceRefs,
     }),
     // No recommended-pathway gate here (spec §8.2/issue #60): call
     // preparation recommends no pathway, unlike enrollment-brief.
@@ -227,17 +253,67 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
   // field. `permittedClaims` is the critical one — a prohibited guarantee
   // smuggled into a "permitted" claim must still be blocked. Same fields the
   // old gate's `selectText` scanned — keep in sync with `buildBodyMarkdown`.
+  // Voice tagging (#140 / F-K), propagated here by P1.10d-4. Coverage is
+  // unchanged — every text is still classified; only the appeal path differs.
+  //
+  // `permittedClaims` STAYS own_voice, deliberately and importantly. The output
+  // schema calls it "the critical field for the semantic compliance review: a
+  // prohibited guarantee smuggled in HERE must still be blocked". It is the
+  // agent asserting what the founder may say, so it keeps the full unappealable
+  // floor.
+  //
+  // `claimsToAvoid` is reports_input for the opposite reason: its entire PURPOSE
+  // is to enumerate prohibited claims, so it necessarily quotes the language the
+  // floor looks for. A field that must name the forbidden thing cannot be
+  // finally blocked for naming it — that is F-K exactly, and it is structural
+  // here rather than incidental.
   complianceReviewText: (output) => [
-    output.meetingObjective,
-    output.summary,
-    output.recommendedClose,
-    ...output.criticalUnknowns,
-    ...output.topQuestions,
-    ...output.likelyObjections,
-    ...output.permittedClaims,
-    ...output.claimsToAvoid,
-    ...output.observedFacts.map((f) => f.statement),
-    ...output.inferences.map((i) => i.statement),
+    { text: output.meetingObjective, field: "meetingObjective", voice: "own_voice" as const },
+
+    { text: output.recommendedClose, field: "recommendedClose", voice: "own_voice" as const },
+    ...output.topQuestions.map((text) => ({
+      text,
+      field: "topQuestions",
+      voice: "own_voice" as const,
+    })),
+    ...output.permittedClaims.map((text) => ({
+      text,
+      field: "permittedClaims",
+      voice: "own_voice" as const,
+    })),
+    ...output.inferences.map((i) => ({
+      text: i.statement,
+      field: "inferences",
+      voice: "own_voice" as const,
+    })),
+    // NOT own_voice, corrected after live run 11 floored it on both injection
+    // fixtures. Same reasoning as objection_intelligence: a summary of a
+    // conversation necessarily RECOUNTS untrusted input, so it is a report even
+    // though it reads like the agent's own prose. I tagged it own_voice first
+    // by analogy to enrollment_brief's `candidateSummary` — that analogy is
+    // wrong, because enrollment_brief summarises an APPLICATION while this
+    // summarises a CONVERSATION whose content is the untrusted part.
+    { text: output.summary, field: "summary", voice: "reports_input" as const },
+    ...output.criticalUnknowns.map((text) => ({
+      text,
+      field: "criticalUnknowns",
+      voice: "reports_input" as const,
+    })),
+    ...output.likelyObjections.map((text) => ({
+      text,
+      field: "likelyObjections",
+      voice: "reports_input" as const,
+    })),
+    ...output.claimsToAvoid.map((text) => ({
+      text,
+      field: "claimsToAvoid",
+      voice: "reports_input" as const,
+    })),
+    ...output.observedFacts.map((f) => ({
+      text: f.statement,
+      field: "observedFacts",
+      voice: "reports_input" as const,
+    })),
   ],
   artifact: {
     artifactType: "call_preparation_brief",

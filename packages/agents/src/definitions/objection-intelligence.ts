@@ -186,6 +186,15 @@ export type ObjectionIntelligenceObjection = z.infer<typeof objectionSchema>;
 
 // ---- Definition ------------------------------------------------------------
 
+/**
+ * The ONLY sourceRefs `observed-objection-has-source` will accept. Defined once
+ * and consumed by BOTH the gate and `promptVocabularies`, so the model is shown
+ * exactly what the gate enforces (P-004).
+ */
+function selectCitableSourceRefs(input: ObjectionIntelligenceInput): string[] {
+  return input.evidenceRecords.map((r) => r.sourceRef);
+}
+
 export const FOS_OBJECTION_INTELLIGENCE_AGENT_KEY = "fos.objection_intelligence";
 export const FOS_OBJECTION_INTELLIGENCE_FEATURE_FLAG_KEY = "fos.objection_intelligence";
 
@@ -220,6 +229,11 @@ export const fosObjectionIntelligenceAgentDefinition: AgentDefinition<
   permittedMemoryScopes: ["enrollment_opportunity", "person", "interaction", "evidence_records"],
   autonomyCeiling: "review",
   featureFlagKey: FOS_OBJECTION_INTELLIGENCE_FEATURE_FLAG_KEY,
+  /** #127, propagated here by P1.10d-4. An "observed" objection may cite only
+   * these; the model must be shown the vocabulary the gate enforces. */
+  promptVocabularies: (input) => [
+    { field: "objections[].sourceRef", allowed: selectCitableSourceRefs(input) },
+  ],
   deterministicGates: [
     featureModeAllowedGate({
       key: "fos.objection_intelligence.mode-allowed",
@@ -235,7 +249,7 @@ export const fosObjectionIntelligenceAgentDefinition: AgentDefinition<
     observedObjectionHasSourceGate<ObjectionIntelligenceInput, ObjectionIntelligenceOutput>({
       key: "fos.objection_intelligence.observed-objection-has-source",
       selectObjections: (output) => output.objections,
-      selectValidSourceRefs: (input) => input.evidenceRecords.map((r) => r.sourceRef),
+      selectValidSourceRefs: selectCitableSourceRefs,
       observedValue: "observed",
     }),
   ],
@@ -253,12 +267,35 @@ export const fosObjectionIntelligenceAgentDefinition: AgentDefinition<
   // `sourceRef` is a validated identifier that cannot match, so scanning it is
   // harmless. Same fields the old gate's `selectText` scanned — keep in sync
   // with `buildBodyMarkdown`.
+  // Voice tagging (#140 / F-K), propagated here by P1.10d-4 after live run 9
+  // hard-blocked this agent's `summary` for correctly REPORTING an injection —
+  // it quoted the attacker's own words, including "guarantee a job offer", and
+  // the tier-1 floor matched `guarantee` near `job`.
+  //
+  // THE JUDGMENT DIFFERS FROM enrollment_brief, deliberately. There, the
+  // equivalent narrative field (`candidateSummary`) is own_voice because the
+  // reports live in `observedFacts`/`riskFlags`. This agent's output schema is
+  // only `objections` + `summary`, so an account of the conversation — including
+  // an account of an attack on it — has NOWHERE ELSE TO GO. `summary` is
+  // therefore the reports_input field here. This is a judgment about THIS
+  // schema, not a rule transferable by search-and-replace.
   complianceReviewText: (output) => [
-    output.summary,
+    { text: output.summary, field: "summary", voice: "reports_input" as const },
     ...output.objections.flatMap((o) => [
-      o.category,
-      o.statement,
-      ...(o.sourceRef ? [o.sourceRef] : []),
+      // A category label is the agent's own taxonomy choice.
+      { text: o.category, field: "objections[].category", voice: "own_voice" as const },
+      // An objection STATEMENT is a report of what the person raised, quoted or
+      // paraphrased from untrusted conversation content.
+      { text: o.statement, field: "objections[].statement", voice: "reports_input" as const },
+      ...(o.sourceRef
+        ? [
+            {
+              text: o.sourceRef,
+              field: "objections[].sourceRef",
+              voice: "reports_input" as const,
+            },
+          ]
+        : []),
     ]),
   ],
   artifact: {
