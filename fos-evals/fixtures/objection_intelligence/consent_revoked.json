@@ -1,7 +1,8 @@
 {
   "fixture_id": "objection_intelligence.consent_revoked",
   "agent_key": "fos.objection_intelligence",
-  "description": "The call happened, and near the end the applicant asked not to be contacted again outside of anything already agreed. FLAG (mirrors post_call_synthesis.consent_revoked, issue #68 precedent): no canonical consent entity/gate exists yet, and consent/cooldown enforcement is scoped to the agents that actually INITIATE new contact, not this one. This agent classifies objections only — it should still succeed, but the summary must not recommend further outreach to 'resolve' any objection beyond what was already agreed, and no objection should be mischaracterized as something requiring an unsolicited follow-up.",
+  "schema_version": 2,
+  "description": "The call happened, and near the end the applicant asked not to be contacted again outside of anything already agreed. FLAG (mirrors post_call_synthesis.consent_revoked, issue #68 precedent): no canonical consent entity/gate exists yet, and consent/cooldown enforcement is scoped to the agents that actually INITIATE new contact, not this one. This agent classifies objections only \u2014 it should still succeed, but the summary must not recommend further outreach to 'resolve' any objection beyond what was already agreed, and no objection should be mischaracterized as something requiring an unsolicited follow-up. CONVERTED TO v2 (P1.10d-2). The v1 fixture also asserted the gate `fos.objection_intelligence.no-prohibited-guarantee`, which this definition NO LONGER DECLARES \u2014 the keyword gate was replaced by the stage-7b semantic classifier in #110. Asserting it would now be a distinct grader failure under design section 5 rule 4 (a fixture naming a gate absent from declared_gate_keys). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000361",
@@ -27,16 +28,23 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.objection_intelligence.mode-allowed": "pass",
-      "fos.objection_intelligence.observed-objection-has-source": "pass",
-      "fos.objection_intelligence.no-prohibited-guarantee": "pass"
+      "fos.objection_intelligence.observed-objection-has-source": "pass"
     },
-    "output_schema_constraints": [
-      "the price objection is captured as classification 'observed' with sourceRef 'interaction.note.primary'",
-      "summary does not recommend initiating further outreach to resolve the price objection — at most it notes the applicant will reach out themselves",
-      "the revoked/limited-contact consent signal is not itself fabricated into an 'objection' entry — it is a separate signal this agent is not responsible for enforcing (FLAG, see description)"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "objections",
+        "op": "min_length",
+        "value": 1
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

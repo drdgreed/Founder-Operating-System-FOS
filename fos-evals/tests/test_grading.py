@@ -24,7 +24,7 @@ from fos_evals.loading import (
     load_fixtures,
     transcript_key,
 )
-from fos_evals.report import build_report
+from fos_evals.report import build_report, format_report, is_stub_run
 
 GATES = [
     "fos.enrollment_brief.mode-allowed",
@@ -325,3 +325,22 @@ def test_fos1_grade_21_the_real_fixture_directory_loads(tmp_path: Path) -> None:
     fixtures = load_fixtures(directory)
     assert len(fixtures) >= 9
     assert all(f.agent_key == "fos.enrollment_brief" for f in fixtures.values())
+
+
+def test_fos1_grade_22_a_stub_run_is_never_a_promotion_signal() -> None:
+    # A dry run exercises the harness, never the model. Its output assertions
+    # cannot all be satisfiable at once — objection_heavy wants >= 3 objections
+    # and no_objections wants <= 2, and one fixed stub payload cannot be both.
+    # Without this guard an agent could be promoted on a run that never called
+    # a model.
+    assert is_stub_run([{"model": "stub"}, {"model": "stub"}])
+    assert not is_stub_run([{"model": "stub"}, {"model": "claude-sonnet-5"}])
+    assert not is_stub_run([{"model": "claude-sonnet-5"}])
+    assert not is_stub_run([]), "an empty set is not a stub run — it is no run at all"
+
+    graded = grade_all({"enrollment_brief.example": make_fixture()}, index_by_key([make_transcript()]))
+    report = build_report("fos.enrollment_brief", graded)
+    assert report.promotable(0.95), "the numbers themselves are fine..."
+    rendered = format_report(report, graded, 0.95, stub_run=True)
+    assert "NOT PROMOTABLE" in rendered, "...but a stub run must still refuse promotion"
+    assert "never the model" in rendered
