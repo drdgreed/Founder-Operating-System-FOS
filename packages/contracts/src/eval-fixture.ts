@@ -109,17 +109,49 @@ export const evalFixtureV2Schema = z
     /** The `runAgent` input. Entity ID fields are PLACEHOLDERS — the runner
      * rebinds them to freshly-seeded canonical rows before the run (plan §A1). */
     input: z.record(z.unknown()),
+    /**
+     * Runner-level setup, distinct from the agent's `input`.
+     *
+     * Exists for F-D. D6.3 makes "a `succeeded` status where `policy_blocked`
+     * was expected" a CRITICAL failure — a gate that should have blocked and
+     * did not. Nothing could exercise it, because every reachable block
+     * depended on the live model misbehaving, and a fixture cannot REQUIRE the
+     * model to misbehave.
+     *
+     * `feature_flag_enabled: false` gives a deterministic block instead: the
+     * pipeline refuses at stage 2 with `policy_blocked` and
+     * `reason: "feature_flag_disabled"`, before any gate and before any model
+     * call. The fixture costs nothing to run and cannot flake.
+     *
+     * Optional and defaulting to enabled, so every existing fixture is
+     * unaffected and `schema_version` does not move.
+     */
+    runner: z.object({ feature_flag_enabled: z.boolean() }).strict().optional(),
     expected: z
       .object({
         /** Any-of. A live model may legitimately land on more than one terminal
          * status for the same input (e.g. an injection fixture either succeeds
          * cleanly or is blocked — both are correct, silently complying is not). */
         status: z.array(z.enum(evalRunStatusValues)).min(1),
+        /**
+         * Gate assertions. When PRESENT it must assert at least one gate — an
+         * empty map is a fixture that forgot, not a fixture that means "none".
+         *
+         * OPTIONAL, because a run blocked at stage 2 (a disabled feature flag)
+         * never reaches the gates, so there is no gate outcome to assert. The
+         * superRefine below makes this exact: it may be omitted if and ONLY if
+         * the fixture disables the flag, and it MUST be omitted when it does.
+         * Asserting a gate that cannot run is a defect either way.
+         *
+         * GRADER SEMANTICS: an absent `gate_outcomes` means "gates did not run
+         * and none are asserted" — never "any gate outcome is acceptable".
+         */
         gate_outcomes: z
           .record(z.enum(gateOutcomeValues))
           .refine((v) => Object.keys(v).length > 0, {
-            message: "gate_outcomes must assert at least one gate",
-          }),
+            message: "gate_outcomes must assert at least one gate when present",
+          })
+          .optional(),
         /** `approved` is not a member of `evalArtifactVersionStatusValues`, so a
          * fixture permitting it fails to parse — the spec bug is caught at load
          * time rather than becoming a green grade. */
@@ -142,6 +174,29 @@ export const evalFixtureV2Schema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    // gate_outcomes <-> pre-gate block, both directions. Keeping this exact is
+    // what stops "optional" degrading into "sometimes forgotten": a fixture
+    // that runs gates MUST assert them, and one that cannot reach them MUST
+    // NOT pretend to.
+    const blocksBeforeGates = value.runner?.feature_flag_enabled === false;
+    if (!blocksBeforeGates && value.expected.gate_outcomes === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["expected", "gate_outcomes"],
+        message:
+          "gate_outcomes is required unless the fixture sets runner.feature_flag_enabled=false, " +
+          "which blocks at stage 2 before any gate runs",
+      });
+    }
+    if (blocksBeforeGates && value.expected.gate_outcomes !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["expected", "gate_outcomes"],
+        message:
+          "a fixture with runner.feature_flag_enabled=false blocks before any gate runs, " +
+          "so it must not assert gate outcomes",
+      });
+    }
     const { paired_control: pairedControl, control_must_match: mustMatch } = value.expected;
     if (pairedControl === null && mustMatch.length > 0) {
       ctx.addIssue({
