@@ -1,7 +1,8 @@
 {
   "fixture_id": "objection_intelligence.objection_heavy",
   "agent_key": "fos.objection_intelligence",
-  "description": "The call surfaced multiple explicit objections (price, time commitment, outcome skepticism), all directly stated by the candidate. Every objection should be classified 'observed' with a resolvable sourceRef into evidenceRecords, since each was actually voiced in the conversation.",
+  "schema_version": 2,
+  "description": "The call surfaced multiple explicit objections (price, time commitment, outcome skepticism), all directly stated by the candidate. Every objection should be classified 'observed' with a resolvable sourceRef into evidenceRecords, since each was actually voiced in the conversation. CONVERTED TO v2 (P1.10d-2). The v1 fixture also asserted the gate `fos.objection_intelligence.no-prohibited-guarantee`, which this definition NO LONGER DECLARES \u2014 the keyword gate was replaced by the stage-7b semantic classifier in #110. Asserting it would now be a distinct grader failure under design section 5 rule 4 (a fixture naming a gate absent from declared_gate_keys). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000311",
@@ -28,16 +29,23 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.objection_intelligence.mode-allowed": "pass",
-      "fos.objection_intelligence.observed-objection-has-source": "pass",
-      "fos.objection_intelligence.no-prohibited-guarantee": "pass"
+      "fos.objection_intelligence.observed-objection-has-source": "pass"
     },
-    "output_schema_constraints": [
-      "objections[] lists price, time-commitment, and outcome-skepticism as distinct entries",
-      "each entry is classification 'observed' and cites sourceRef 'interaction.note.primary'",
-      "no objection.statement or summary promises a specific discount or a guaranteed employment/interview outcome"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "objections",
+        "op": "min_length",
+        "value": 3
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

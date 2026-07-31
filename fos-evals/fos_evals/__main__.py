@@ -14,7 +14,7 @@ from .loading import (
     load_fixtures,
     load_transcript_dir,
 )
-from .report import build_report, format_report
+from .report import build_report, format_report, is_stub_run
 
 #: Promotion threshold (design §2). A critical failure blocks regardless.
 DEFAULT_THRESHOLD = 0.95
@@ -50,7 +50,10 @@ def main(argv: list[str] | None = None) -> int:
     graded = grade_all(fixtures, by_key)
     agent_key = args.agent or next(iter(fixtures.values())).agent_key
     report = build_report(agent_key, graded)
-    print(format_report(report, graded, args.threshold))
+    stub_run = is_stub_run(transcripts)
+    print(format_report(report, graded, args.threshold, stub_run))
+    if stub_run:
+        return EXIT_NOT_PROMOTABLE
     return EXIT_PROMOTABLE if report.promotable(args.threshold) else EXIT_NOT_PROMOTABLE
 
 

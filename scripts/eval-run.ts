@@ -50,6 +50,9 @@ import {
   DEFAULT_MODEL,
   fosEnrollmentBriefAgentDefinition,
   FOS_ENROLLMENT_BRIEF_AGENT_KEY,
+  fosObjectionIntelligenceAgentDefinition,
+  FOS_OBJECTION_INTELLIGENCE_AGENT_KEY,
+  FOS_OBJECTION_INTELLIGENCE_FEATURE_FLAG_KEY,
   FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
   type ModelClient,
   type GenerateStructuredResult,
@@ -62,6 +65,7 @@ import {
 import {
   createEvalDb,
   seedEnrollmentBriefFixture,
+  seedObjectionIntelligenceFixture,
   setEvalFeatureFlag,
   createStubNotionClient,
   stubComplianceReviewer,
@@ -82,34 +86,71 @@ const TRIGGER = { type: "eval", source: "fos-evals" } as const;
  * is under test, not the model.
  */
 export class StubModelClient implements ModelClient {
+  /**
+   * The payload to emit. Defaults to the enrollment-brief shape so existing
+   * callers are unchanged; the registry supplies one per agent, because a stub
+   * emitting another agent's shape fails stage-6 validation and turns every
+   * dry-run row into `evaluation_failed` — a green-looking harness that tested
+   * nothing.
+   */
+  constructor(private readonly payload: unknown = ENROLLMENT_BRIEF_STUB_OUTPUT) {}
+
   async generateStructured(): Promise<GenerateStructuredResult> {
-    return {
-      output: {
-        candidateSummary: "Applicant is a working data analyst targeting a senior analytics role.",
-        observedFacts: [
-          {
-            statement: "Currently working as a Data Analyst at Acme Corp.",
-            sourceRef: "person.current_role",
-          },
-        ],
-        inferences: [
-          { statement: "Likely ready for an accelerated pathway.", confidence: "medium" },
-        ],
-        unknowns: ["Budget authority is not stated."],
-        readiness: "ready_now",
-        fitStatus: "strong_fit",
-        fitConfidence: "medium",
-        fitRationale: "Relevant current role and a clearly stated three-month target.",
-        recommendedPathway: "accelerated_track",
-        objections: ["Price may be a concern."],
-        discoveryQuestions: ["What is your budget range for this programme?"],
-        riskFlags: [],
-        nextAction: "Schedule a discovery call.",
-      },
-      usage: { inputTokens: 0, outputTokens: 0 },
-    };
+    return { output: this.payload, usage: { inputTokens: 0, outputTokens: 0 } };
   }
 }
+
+const ENROLLMENT_BRIEF_STUB_OUTPUT = {
+  candidateSummary: "Applicant is a working data analyst targeting a senior analytics role.",
+  observedFacts: [
+    {
+      statement: "Currently working as a Data Analyst at Acme Corp.",
+      sourceRef: "person.current_role",
+    },
+  ],
+  inferences: [{ statement: "Likely ready for an accelerated pathway.", confidence: "medium" }],
+  unknowns: ["Budget authority is not stated."],
+  readiness: "ready_now",
+  fitStatus: "strong_fit",
+  fitConfidence: "medium",
+  fitRationale: "Relevant current role and a clearly stated three-month target.",
+  recommendedPathway: "accelerated_track",
+  objections: ["Price may be a concern."],
+  discoveryQuestions: ["What is your budget range for this programme?"],
+  riskFlags: [],
+  nextAction: "Schedule a discovery call.",
+};
+
+/**
+ * Stub payload for `fos.objection_intelligence`.
+ *
+ * `sourceRef` is REBOUND per fixture by the registry entry, to the first
+ * evidence record that fixture actually supplies. A hardcoded sourceRef would
+ * fail `observed-objection-has-source` on every fixture whose evidence happens
+ * to be spelled differently — which would look like a gate finding a real
+ * problem, and is the run-1 failure shape (the model grounding honestly against
+ * a vocabulary nobody showed it).
+ */
+const OBJECTION_INTELLIGENCE_STUB_OUTPUT = {
+  objections: [
+    {
+      category: "price",
+      statement: "The programme fee is higher than the applicant budgeted for.",
+      classification: "observed",
+      severity: "medium",
+      confidence: "medium",
+      sourceRef: "PLACEHOLDER",
+    },
+    {
+      category: "time",
+      statement: "The applicant may not have the weekly hours the programme needs.",
+      classification: "inferred",
+      severity: "low",
+      confidence: "low",
+    },
+  ],
+  summary: "One observed price objection with a cited source, and one inferred time objection.",
+};
 
 export interface RunEvalSuiteOptions {
   agentKey: string;
@@ -175,6 +216,16 @@ interface EvalAgentSetup {
    * run, so a caller's own value survives (including "not set at all").
    */
   env?: Readonly<Record<string, string>>;
+  /**
+   * Payload the dry-run stub emits for this agent. A stub emitting another
+   * agent's shape fails stage-6 validation, turning every dry-run row into
+   * `evaluation_failed` — a harness that runs green while testing nothing.
+   *
+   * Takes the prepared input so a payload can cite something the FIXTURE
+   * actually supplies (e.g. a real `sourceRef`) rather than a constant that
+   * only happens to match some fixtures.
+   */
+  stubOutput(input: Record<string, unknown>): unknown;
 }
 
 const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
@@ -183,6 +234,7 @@ const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
     definition: fosEnrollmentBriefAgentDefinition,
     featureFlagKey: FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
     env: { FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID: "stub-enrollment-data-source" },
+    stubOutput: () => ENROLLMENT_BRIEF_STUB_OUTPUT,
     async prepare(db, input) {
       const seeded = await seedEnrollmentBriefFixture(db);
       const opportunity = { ...(input.opportunity as Record<string, unknown>) };
@@ -195,6 +247,51 @@ const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
       return {
         workspaceId: seeded.workspace.id,
         input: { ...input, opportunity, person, application },
+      };
+    },
+  },
+
+  [FOS_OBJECTION_INTELLIGENCE_AGENT_KEY]: {
+    fixtureDir: "objection_intelligence",
+    definition: fosObjectionIntelligenceAgentDefinition,
+    featureFlagKey: FOS_OBJECTION_INTELLIGENCE_FEATURE_FLAG_KEY,
+    // No Notion data-source env: this agent has no Notion projection target,
+    // which is exactly the kind of per-agent difference the registry exists to
+    // hold rather than hardcode.
+    stubOutput: (input) => {
+      // Cite an evidence record the FIXTURE actually supplies. A constant
+      // sourceRef would fail `observed-objection-has-source` on every fixture
+      // spelled differently — which looks like the gate catching a real
+      // problem, and is the live-run-1 failure shape.
+      const records = (input.evidenceRecords as { sourceRef?: string }[] | undefined) ?? [];
+      const firstRef = records[0]?.sourceRef;
+      const objections = OBJECTION_INTELLIGENCE_STUB_OUTPUT.objections.map((objection) =>
+        objection.classification === "observed" && firstRef
+          ? { ...objection, sourceRef: firstRef }
+          : objection,
+      );
+      // A fixture with NO evidence cannot legitimately yield an observed
+      // objection, so the stub drops it rather than emitting an ungrounded one
+      // the gate would (correctly) block.
+      return {
+        ...OBJECTION_INTELLIGENCE_STUB_OUTPUT,
+        objections: firstRef
+          ? objections
+          : objections.filter((o) => o.classification !== "observed"),
+      };
+    },
+    async prepare(db, input) {
+      const seeded = await seedObjectionIntelligenceFixture(db);
+      const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      const person = { ...(input.person as Record<string, unknown>) };
+      const interaction = { ...(input.interaction as Record<string, unknown>) };
+      opportunity.id = seeded.opportunity.id;
+      opportunity.stage = seeded.opportunity.stage;
+      person.id = seeded.person.id;
+      interaction.id = seeded.interaction.id;
+      return {
+        workspaceId: seeded.workspace.id,
+        input: { ...input, opportunity, person, interaction },
       };
     },
   },
@@ -242,8 +339,9 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
   // the row alone cannot distinguish a stub run from a live one — and a
   // transcript that named a real model for stub-generated output would quietly
   // corrupt the grader's record and any cost accounting built on it.
+  // The stub is built PER FIXTURE (below) so its payload can cite something
+  // that fixture actually supplies. An injected client is used as given.
   const usedRealModel = options.modelClient !== undefined;
-  const modelClient = options.modelClient ?? new StubModelClient();
   const transcripts: RunTranscript[] = [];
 
   // Durability (one bad transcript must not discard every transcript already
@@ -270,6 +368,8 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
       );
       try {
         const prepared = await setup.prepare(ctx.db, fixture.input);
+        const modelClient =
+          options.modelClient ?? new StubModelClient(setup.stubOutput(prepared.input));
         await setEvalFeatureFlag(ctx.db, {
           workspaceId: prepared.workspaceId,
           key: setup.featureFlagKey,

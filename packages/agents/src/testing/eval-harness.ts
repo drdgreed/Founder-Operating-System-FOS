@@ -12,6 +12,7 @@ import {
   enrollmentOpportunity,
   applicationSubmission,
   type FeatureFlagMode,
+  interaction,
 } from "@fos/db/schema";
 import { NotionClient } from "@fos/notion";
 import type { ComplianceReviewDecision } from "../types.js";
@@ -134,6 +135,97 @@ export async function seedEnrollmentBriefFixture(db: EvalDb) {
     throw new Error("seedEnrollmentBriefFixture: application_submission insert returned no row");
 
   return { workspace, product: prod, person: personRow, opportunity, application };
+}
+
+/**
+ * Seed the canonical rows `fos.objection_intelligence` reasons over
+ * (P1.10d-2).
+ *
+ * Differs from the enrollment-brief seeder in exactly one row: an
+ * `interaction` instead of an `application_submission`. That is the whole
+ * reason P1.10d is not "mechanical fan-out" — each agent's input names
+ * different canonical entities, so each needs its own seeder.
+ *
+ * `evidenceRecords` are deliberately NOT seeded: they arrive from the fixture
+ * as opaque, sourceRef-addressable entries, and there is no Evidence table
+ * (a FLAG carried by this agent's definition, and by call-preparation and
+ * post-call-synthesis too).
+ *
+ * The interaction is `completed`: this agent classifies objections from a
+ * conversation that already happened, so a `scheduled` one would be a fixture
+ * that cannot legitimately produce observed objections.
+ */
+export async function seedObjectionIntelligenceFixture(db: EvalDb) {
+  const workspace = await seedEvalWorkspace(db);
+
+  const [prod] = await db
+    .insert(product)
+    .values({
+      workspaceId: workspace.id,
+      productKey: "career-foundry",
+      name: "Career Foundry",
+      productType: "product",
+      parentProductId: null,
+    })
+    .returning();
+  if (!prod) throw new Error("seedObjectionIntelligenceFixture: product insert returned no row");
+
+  const [personRow] = await db
+    .insert(person)
+    .values({
+      workspaceId: workspace.id,
+      firstName: "Ada",
+      lastName: "Lovelace",
+      currentRole: "Data Analyst",
+      currentCompany: "Acme Corp",
+      location: "Remote",
+      source: "website_application",
+      lifecycleType: "applicant",
+    })
+    .returning();
+  if (!personRow)
+    throw new Error("seedObjectionIntelligenceFixture: person insert returned no row");
+
+  const [opportunity] = await db
+    .insert(enrollmentOpportunity)
+    .values({
+      workspaceId: workspace.id,
+      productId: prod.id,
+      personId: personRow.id,
+      stage: "reviewing",
+      currency: "USD",
+      version: 1,
+    })
+    .returning();
+  if (!opportunity)
+    throw new Error(
+      "seedObjectionIntelligenceFixture: enrollment_opportunity insert returned no row",
+    );
+
+  const [interactionRow] = await db
+    .insert(interaction)
+    .values({
+      workspaceId: workspace.id,
+      opportunityId: opportunity.id,
+      interactionType: "discovery_call",
+      status: "completed",
+      occurredAt: new Date("2026-01-15T15:00:00Z"),
+      // `notes` and `transcriptRef` stay NULL on purpose. They are UNTRUSTED
+      // (spec 551) and reach the model only via `evidenceRecords`; seeding
+      // content here would imply a path that must not exist.
+      version: 1,
+    })
+    .returning();
+  if (!interactionRow)
+    throw new Error("seedObjectionIntelligenceFixture: interaction insert returned no row");
+
+  return {
+    workspace,
+    product: prod,
+    person: personRow,
+    opportunity,
+    interaction: interactionRow,
+  };
 }
 
 /** Env var the stub Notion client reads its (irrelevant) token from. Set by
