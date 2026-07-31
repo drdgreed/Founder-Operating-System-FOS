@@ -1,7 +1,8 @@
 {
   "fixture_id": "call_preparation.strong_fit",
   "agent_key": "fos.call_preparation",
-  "description": "A well-qualified applicant with a scheduled discovery call and a clean evidence trail. The baseline 'everything works' case.",
+  "schema_version": 2,
+  "description": "A well-qualified applicant with a scheduled discovery call and a clean evidence trail. The baseline 'everything works' case. CONVERTED TO v2 (P1.10d-3). The v1 fixture also asserted `fos.call_preparation.no-prohibited-guarantee`, which this definition NO LONGER DECLARES \u2014 the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions` and the rest stays here, asserted by nothing.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000101",
@@ -46,17 +47,23 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.call_preparation.mode-allowed": "pass",
-      "fos.call_preparation.facts-resolve-to-sources": "pass",
-      "fos.call_preparation.no-prohibited-guarantee": "pass"
+      "fos.call_preparation.facts-resolve-to-sources": "pass"
     },
-    "output_schema_constraints": [
-      "every observedFacts[] entry cites a sourceRef present in evidenceRecords",
-      "meetingObjective and recommendedClose are non-empty and specific to this applicant",
-      "permittedClaims is a subset of (or clearly drawn from) availableClaims",
-      "no guarantee language anywhere in meetingObjective/summary/recommendedClose/permittedClaims"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "observedFacts",
+        "op": "min_length",
+        "value": 1
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }
