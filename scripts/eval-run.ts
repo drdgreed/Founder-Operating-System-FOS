@@ -224,7 +224,10 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
         await setEvalFeatureFlag(ctx.db, {
           workspaceId: seeded.workspace.id,
           key: FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
-          enabled: true,
+          // A fixture may disable the flag to force a deterministic stage-2
+          // block (F-D). Defaults to enabled, so every other fixture is
+          // unaffected.
+          enabled: fixture.runner?.feature_flag_enabled ?? true,
           mode: "review",
         });
         process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID = "stub-enrollment-data-source";

@@ -1,0 +1,59 @@
+{
+  "fixture_id": "enrollment_brief.flag_disabled",
+  "agent_key": "fos.enrollment_brief",
+  "schema_version": 2,
+  "description": "D6.3 COVERAGE (F-D). The ONLY fixture that requires a block. The feature flag is disabled, so the pipeline refuses at stage 2 with policy_blocked and reason 'feature_flag_disabled' \u2014 before any gate and before any model call, so this is deterministic and costs nothing. The input is deliberately the strong_fit input: a fixture that blocked because of BAD input would prove nothing, since it could block for the wrong reason. This blocks for exactly one reason. A 'succeeded' here means the runtime executed an agent whose flag was OFF \u2014 the dangerous asymmetry D6.3 exists to catch \u2014 so status is critical_if_failed. gate_outcomes is absent because no gate runs; the schema enforces that absence rather than allowing it.",
+  "runner": {
+    "feature_flag_enabled": false
+  },
+  "input": {
+    "opportunity": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "stage": "reviewing",
+      "primaryGoal": "Transition into a senior data analyst role",
+      "targetRole": "Senior Data Analyst",
+      "targetTimeline": "3 months"
+    },
+    "person": {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "currentRole": "Data Analyst",
+      "currentCompany": "Acme Corp",
+      "location": "Remote"
+    },
+    "application": {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "formVersion": "v1",
+      "sourceReference": "website_application"
+    },
+    "evidenceRecords": [
+      {
+        "sourceRef": "application.raw_payload.goal",
+        "sourceType": "application_field",
+        "content": "I want to move from a generalist analyst role into a senior, specialized analytics position within 3 months."
+      },
+      {
+        "sourceRef": "person.current_role",
+        "sourceType": "person_field",
+        "content": "Currently a Data Analyst at Acme Corp, 4 years experience with SQL and Python."
+      },
+      {
+        "sourceRef": "application.raw_payload.availability",
+        "sourceType": "application_field",
+        "content": "Available 10 hours/week for coursework, evenings and weekends."
+      }
+    ],
+    "availablePathways": ["standard_track", "accelerated_track"]
+  },
+  "expected": {
+    "status": ["policy_blocked"],
+    "artifact_version_status": ["draft"],
+    "max_retry_count": 0,
+    "compliance_review_blocked": null,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": []
+  },
+  "critical_if_failed": ["status"]
+}

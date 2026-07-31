@@ -9,7 +9,7 @@ import type {
 describe("eval runner (dry-run)", () => {
   it("FOS1-EVALRUN-01: emits one schema-valid transcript per fixture", async () => {
     const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 1 });
-    expect(transcripts).toHaveLength(8);
+    expect(transcripts).toHaveLength(9);
     for (const transcript of transcripts) {
       expect(() => runTranscriptSchema.parse(transcript)).not.toThrow();
     }
@@ -17,7 +17,7 @@ describe("eval runner (dry-run)", () => {
 
   it("FOS1-EVALRUN-02: emits N transcripts per fixture when repetitions > 1", async () => {
     const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 2 });
-    expect(transcripts).toHaveLength(16);
+    expect(transcripts).toHaveLength(18);
     expect(new Set(transcripts.map((t) => t.repetition))).toEqual(new Set([0, 1]));
   }, 180_000);
 
@@ -197,14 +197,22 @@ describe("F-C: the transcript states the runner had never produced", () => {
       modelClient: client,
     });
 
-    expect(new Set(transcripts.map((t) => t.status))).toEqual(new Set(["evaluation_failed"]));
+    // `flag_disabled` (F-D) refuses at stage 2 before any model call, so it
+    // blocks no matter what this client returns. It is exempt from every
+    // assertion about model BEHAVIOUR — excluded here rather than loosening
+    // the assertion, so the other eight stay strict.
+    const modelDriven = transcripts.filter(
+      (t) => t.fixture_id !== "enrollment_brief.flag_disabled",
+    );
+    expect(modelDriven).toHaveLength(8);
+    expect(new Set(modelDriven.map((t) => t.status))).toEqual(new Set(["evaluation_failed"]));
     // The repair retry is what distinguishes this from a single failed parse.
-    for (const t of transcripts) {
+    for (const t of modelDriven) {
       expect(t.retry_count, `${t.fixture_id} should record the repair attempt`).toBe(1);
       expect(t.artifact, `${t.fixture_id} must not produce an artifact`).toBeNull();
     }
-    // Two model calls per fixture: the attempt and the repair.
-    expect(client.calls).toBe(transcripts.length * 2);
+    // Two model calls per model-driven fixture: the attempt and the repair.
+    expect(client.calls).toBe(modelDriven.length * 2);
   }, 120_000);
 
   it("FOS1-EVALRUN-12: a run that repairs on retry SUCCEEDS and still records retry_count 1", async () => {
@@ -228,8 +236,11 @@ describe("F-C: the transcript states the runner had never produced", () => {
       modelClient: new ThrowingClient(),
     });
 
-    expect(new Set(transcripts.map((t) => t.status))).toEqual(new Set(["error"]));
-    for (const t of transcripts) {
+    const modelDriven = transcripts.filter(
+      (t) => t.fixture_id !== "enrollment_brief.flag_disabled",
+    );
+    expect(new Set(modelDriven.map((t) => t.status))).toEqual(new Set(["error"]));
+    for (const t of modelDriven) {
       // The message must survive to the transcript — an `error` row with a null
       // message is what made live run 4 take so long to diagnose.
       expect(t.error, `${t.fixture_id} must carry the failure message`).toBeTruthy();
@@ -259,5 +270,24 @@ describe("F-C: the transcript states the runner had never produced", () => {
     const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 2 });
     const keys = transcripts.map((t) => transcriptKey(t));
     expect(new Set(keys).size, "transcriptKey collided within one suite").toBe(transcripts.length);
+  }, 240_000);
+
+  it("FOS1-EVALRUN-16: the D6.3 fixture blocks deterministically with no model call (F-D)", async () => {
+    // The property that makes this fixture usable as a REQUIRED block: it does
+    // not depend on the model behaving badly, so it cannot flake, and it is
+    // free to run. Verified through the real runner, not just the schema.
+    const transcripts = await runEvalSuite({ agentKey: "fos.enrollment_brief", repetitions: 1 });
+    const blocked = transcripts.find((t) => t.fixture_id === "enrollment_brief.flag_disabled");
+
+    expect(blocked, "the D6.3 fixture must be in the suite").toBeDefined();
+    expect(blocked!.status).toBe("policy_blocked");
+    // Stage 2 refuses before the gates, so none ran...
+    expect(blocked!.gate_evaluations).toEqual([]);
+    // ...but the declared list is still emitted, and the prefix invariant holds.
+    expect(blocked!.declared_gate_keys.length).toBeGreaterThan(0);
+    // ...and no model call was made, which is why this fixture is free.
+    expect(blocked!.usage.input_tokens).toBe(0);
+    expect(blocked!.usage.output_tokens).toBe(0);
+    expect(blocked!.artifact).toBeNull();
   }, 240_000);
 });
