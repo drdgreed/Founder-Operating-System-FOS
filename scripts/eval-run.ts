@@ -49,6 +49,7 @@ import {
   AnthropicModelClient,
   DEFAULT_MODEL,
   fosEnrollmentBriefAgentDefinition,
+  FOS_ENROLLMENT_BRIEF_AGENT_KEY,
   FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
   type ModelClient,
   type GenerateStructuredResult,
@@ -135,39 +136,83 @@ export interface RunEvalSuiteOptions {
 }
 
 /** Maps an agent key to its fixture directory name. */
-const FIXTURE_DIR_BY_AGENT: Record<string, string> = {
-  "fos.enrollment_brief": "enrollment_brief",
+/**
+ * Everything the runner needs to execute ONE agent's fixtures.
+ *
+ * WHY THIS EXISTS. The design called P1.10d "mechanical fan-out — convert the
+ * remaining 30 fixtures". It is not. `runEvalSuite` threw for any agent other
+ * than `fos.enrollment_brief`; the only seeder in the harness is
+ * `seedEnrollmentBriefFixture`; and `bindFixtureInput` understood exactly three
+ * input keys. Meanwhile the other five agents' fixtures carry `interaction`,
+ * `availableClaims`, `allowedActionsByStage`, `consentedChannels`,
+ * `scheduledActivities`, `now`, `cooldownUntil` — different shapes needing
+ * different canonical rows. Each agent needs a SEEDER and a BINDER, which is
+ * design work per agent, not JSON conversion.
+ *
+ * This registry is the seam that turns that hidden work into visible work: one
+ * entry per agent, and the loop below is agent-agnostic.
+ *
+ * `prepare` deliberately fuses seeding and id-rebinding into one call. Exposing
+ * them separately would force the registry to be generic in the seeded row
+ * type, which every heterogeneous entry would then have to widen away.
+ */
+interface EvalAgentSetup {
+  /** Directory under `fos-evals/fixtures/`. */
+  fixtureDir: string;
+  definition: Parameters<typeof runAgent>[1];
+  featureFlagKey: string;
+  /**
+   * Seed the canonical rows this agent's fixture input references, then rebind
+   * the fixture's PLACEHOLDER entity ids onto them. The fixture's own UUIDs
+   * exist nowhere in the database.
+   */
+  prepare(
+    db: Awaited<ReturnType<typeof createEvalDb>>["db"],
+    input: Record<string, unknown>,
+  ): Promise<{ workspaceId: string; input: Record<string, unknown> }>;
+  /**
+   * `process.env` this agent's run requires. Saved and restored around every
+   * run, so a caller's own value survives (including "not set at all").
+   */
+  env?: Readonly<Record<string, string>>;
+}
+
+const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
+  [FOS_ENROLLMENT_BRIEF_AGENT_KEY]: {
+    fixtureDir: "enrollment_brief",
+    definition: fosEnrollmentBriefAgentDefinition,
+    featureFlagKey: FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
+    env: { FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID: "stub-enrollment-data-source" },
+    async prepare(db, input) {
+      const seeded = await seedEnrollmentBriefFixture(db);
+      const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      const person = { ...(input.person as Record<string, unknown>) };
+      const application = { ...(input.application as Record<string, unknown>) };
+      opportunity.id = seeded.opportunity.id;
+      opportunity.stage = seeded.opportunity.stage;
+      person.id = seeded.person.id;
+      application.id = seeded.application.id;
+      return {
+        workspaceId: seeded.workspace.id,
+        input: { ...input, opportunity, person, application },
+      };
+    },
+  },
 };
 
 function loadFixtures(agentKey: string) {
-  const dirName = FIXTURE_DIR_BY_AGENT[agentKey];
-  if (!dirName) throw new Error(`runEvalSuite: no fixture directory registered for "${agentKey}"`);
-  const dir = join(FIXTURE_ROOT, dirName);
+  const setup = EVAL_AGENTS[agentKey];
+  if (!setup) {
+    throw new Error(
+      `runEvalSuite: "${agentKey}" is not registered. Add an EVAL_AGENTS entry — it needs a ` +
+        "seeder and an input binder, not just fixtures.",
+    );
+  }
+  const dir = join(FIXTURE_ROOT, setup.fixtureDir);
   return readdirSync(dir)
     .filter((file) => file.endsWith(".json"))
     .sort()
     .map((file) => evalFixtureV2Schema.parse(JSON.parse(readFileSync(join(dir, file), "utf8"))));
-}
-
-/**
- * Rebinds a fixture's PLACEHOLDER entity IDs to the freshly-seeded canonical
- * rows (plan §A1). The fixture's own UUIDs exist nowhere in the database, and
- * `persistDomain` loads the opportunity to assert workspace ownership — so
- * without this every run would fail with `status: "error"` for reasons that
- * have nothing to do with model behavior.
- */
-function bindFixtureInput(
-  input: Record<string, unknown>,
-  seeded: Awaited<ReturnType<typeof seedEnrollmentBriefFixture>>,
-): Record<string, unknown> {
-  const opportunity = { ...(input.opportunity as Record<string, unknown>) };
-  const person = { ...(input.person as Record<string, unknown>) };
-  const application = { ...(input.application as Record<string, unknown>) };
-  opportunity.id = seeded.opportunity.id;
-  opportunity.stage = seeded.opportunity.stage;
-  person.id = seeded.person.id;
-  application.id = seeded.application.id;
-  return { ...input, opportunity, person, application };
 }
 
 /** `paired_control` points forward; the transcript records the reverse edge. */
@@ -181,12 +226,14 @@ function buildControlIndex(fixtures: ReturnType<typeof loadFixtures>): Map<strin
 }
 
 export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTranscript[]> {
-  if (options.agentKey !== "fos.enrollment_brief") {
+  const setup = EVAL_AGENTS[options.agentKey];
+  if (!setup) {
     throw new Error(
-      `runEvalSuite: only fos.enrollment_brief is wired in P1.10a (got "${options.agentKey}")`,
+      `runEvalSuite: "${options.agentKey}" is not registered. Add an EVAL_AGENTS entry — it ` +
+        "needs a seeder and an input binder, not just fixtures.",
     );
   }
-  const definition = fosEnrollmentBriefAgentDefinition;
+  const definition = setup.definition;
   const declaredGateKeys = definition.deterministicGates.map((gate) => gate.key);
   const fixtures = loadFixtures(options.agentKey);
   const controlIndex = buildControlIndex(fixtures);
@@ -218,23 +265,27 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
       // run: save whatever was there (including "nothing") before overwriting
       // it below, and restore exactly that in `finally`. Declared outside the
       // `try` so the `finally` block (its own scope) can still see it.
-      const priorNotionDataSourceId = process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID;
+      const priorEnv = new Map<string, string | undefined>(
+        Object.keys(setup.env ?? {}).map((key) => [key, process.env[key]]),
+      );
       try {
-        const seeded = await seedEnrollmentBriefFixture(ctx.db);
+        const prepared = await setup.prepare(ctx.db, fixture.input);
         await setEvalFeatureFlag(ctx.db, {
-          workspaceId: seeded.workspace.id,
-          key: FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
+          workspaceId: prepared.workspaceId,
+          key: setup.featureFlagKey,
           // A fixture may disable the flag to force a deterministic stage-2
           // block (F-D). Defaults to enabled, so every other fixture is
           // unaffected.
           enabled: fixture.runner?.feature_flag_enabled ?? true,
           mode: "review",
         });
-        process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID = "stub-enrollment-data-source";
+        for (const [key, value] of Object.entries(setup.env ?? {})) {
+          process.env[key] = value;
+        }
         const { client: notionClient } = createStubNotionClient();
 
         const runContext: RunAgentContext = {
-          workspaceId: seeded.workspace.id,
+          workspaceId: prepared.workspaceId,
           actor: ACTOR,
           trigger: TRIGGER,
         };
@@ -256,7 +307,7 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
                 : { complianceReviewer: stubComplianceReviewer }),
             },
             definition,
-            bindFixtureInput(fixture.input, seeded),
+            prepared.input,
             runContext,
           );
         } catch (caught) {
@@ -349,10 +400,10 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
         transcripts.push(transcript);
         if (outPath) appendFileSync(outPath, JSON.stringify(transcript) + "\n", "utf8");
       } finally {
-        if (priorNotionDataSourceId === undefined) {
-          delete process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID;
-        } else {
-          process.env.FOS_NOTION_ENROLLMENT_DATA_SOURCE_ID = priorNotionDataSourceId;
+        // Restore exactly what was there, including "nothing".
+        for (const [key, value] of priorEnv) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
         }
         await ctx.close();
       }
@@ -368,7 +419,7 @@ function parseArgs(argv: string[]) {
     return index === -1 ? undefined : argv[index + 1];
   };
   return {
-    agentKey: get("--agent") ?? "fos.enrollment_brief",
+    agentKey: get("--agent") ?? FOS_ENROLLMENT_BRIEF_AGENT_KEY,
     repetitions: Number(get("-n") ?? get("--repetitions") ?? "1"),
     outDir: get("--out"),
     dryRun: argv.includes("--dry-run"),
@@ -466,10 +517,10 @@ async function main() {
       );
       process.exit(2);
     }
-    const fixtureCount = Object.keys(FIXTURE_DIR_BY_AGENT).includes(args.agentKey)
-      ? readdirSync(join(FIXTURE_ROOT, FIXTURE_DIR_BY_AGENT[args.agentKey]!)).filter((f) =>
-          f.endsWith(".json"),
-        ).length
+    const registered = EVAL_AGENTS[args.agentKey];
+    const fixtureCount = registered
+      ? readdirSync(join(FIXTURE_ROOT, registered.fixtureDir)).filter((f) => f.endsWith(".json"))
+          .length
       : 0;
     const totalRuns = fixtureCount * args.repetitions;
     console.log(
