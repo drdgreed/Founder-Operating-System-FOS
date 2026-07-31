@@ -138,24 +138,27 @@ export async function seedEnrollmentBriefFixture(db: EvalDb) {
 }
 
 /**
- * Seed the canonical rows `fos.objection_intelligence` reasons over
- * (P1.10d-2).
+ * Seed the canonical rows a CONVERSATION-shaped agent reasons over: workspace,
+ * product, person, enrollment opportunity, and one `interaction`.
  *
- * Differs from the enrollment-brief seeder in exactly one row: an
- * `interaction` instead of an `application_submission`. That is the whole
- * reason P1.10d is not "mechanical fan-out" — each agent's input names
- * different canonical entities, so each needs its own seeder.
+ * Parameterised rather than duplicated because two agents now need exactly this
+ * graph and differ only in the interaction's state — `fos.objection_intelligence`
+ * classifies objections from a call that HAPPENED, `fos.call_preparation`
+ * prepares for one that is SCHEDULED. A fixture whose interaction is in the
+ * wrong state is a fixture that cannot legitimately produce its own output.
  *
- * `evidenceRecords` are deliberately NOT seeded: they arrive from the fixture
- * as opaque, sourceRef-addressable entries, and there is no Evidence table
- * (a FLAG carried by this agent's definition, and by call-preparation and
- * post-call-synthesis too).
+ * `notes` and `transcriptRef` stay NULL on purpose. They are UNTRUSTED
+ * (spec 551) and reach the model only via `evidenceRecords`; seeding content
+ * there would imply a path that must not exist.
  *
- * The interaction is `completed`: this agent classifies objections from a
- * conversation that already happened, so a `scheduled` one would be a fixture
- * that cannot legitimately produce observed objections.
+ * `evidenceRecords` are likewise NOT seeded — they arrive from the fixture as
+ * opaque, sourceRef-addressable entries, and there is no Evidence table (a FLAG
+ * carried by every agent in this family).
  */
-export async function seedObjectionIntelligenceFixture(db: EvalDb) {
+async function seedConversationFixture(
+  db: EvalDb,
+  interactionValues: { status: string; occurredAt?: Date; scheduledAt?: Date },
+) {
   const workspace = await seedEvalWorkspace(db);
 
   const [prod] = await db
@@ -168,7 +171,7 @@ export async function seedObjectionIntelligenceFixture(db: EvalDb) {
       parentProductId: null,
     })
     .returning();
-  if (!prod) throw new Error("seedObjectionIntelligenceFixture: product insert returned no row");
+  if (!prod) throw new Error("seedConversationFixture: product insert returned no row");
 
   const [personRow] = await db
     .insert(person)
@@ -183,8 +186,7 @@ export async function seedObjectionIntelligenceFixture(db: EvalDb) {
       lifecycleType: "applicant",
     })
     .returning();
-  if (!personRow)
-    throw new Error("seedObjectionIntelligenceFixture: person insert returned no row");
+  if (!personRow) throw new Error("seedConversationFixture: person insert returned no row");
 
   const [opportunity] = await db
     .insert(enrollmentOpportunity)
@@ -198,9 +200,7 @@ export async function seedObjectionIntelligenceFixture(db: EvalDb) {
     })
     .returning();
   if (!opportunity)
-    throw new Error(
-      "seedObjectionIntelligenceFixture: enrollment_opportunity insert returned no row",
-    );
+    throw new Error("seedConversationFixture: enrollment_opportunity insert returned no row");
 
   const [interactionRow] = await db
     .insert(interaction)
@@ -208,16 +208,12 @@ export async function seedObjectionIntelligenceFixture(db: EvalDb) {
       workspaceId: workspace.id,
       opportunityId: opportunity.id,
       interactionType: "discovery_call",
-      status: "completed",
-      occurredAt: new Date("2026-01-15T15:00:00Z"),
-      // `notes` and `transcriptRef` stay NULL on purpose. They are UNTRUSTED
-      // (spec 551) and reach the model only via `evidenceRecords`; seeding
-      // content here would imply a path that must not exist.
       version: 1,
+      ...interactionValues,
     })
     .returning();
   if (!interactionRow)
-    throw new Error("seedObjectionIntelligenceFixture: interaction insert returned no row");
+    throw new Error("seedConversationFixture: interaction insert returned no row");
 
   return {
     workspace,
@@ -226,6 +222,22 @@ export async function seedObjectionIntelligenceFixture(db: EvalDb) {
     opportunity,
     interaction: interactionRow,
   };
+}
+
+/** `fos.objection_intelligence` classifies objections from a call that HAPPENED. */
+export function seedObjectionIntelligenceFixture(db: EvalDb) {
+  return seedConversationFixture(db, {
+    status: "completed",
+    occurredAt: new Date("2026-01-15T15:00:00Z"),
+  });
+}
+
+/** `fos.call_preparation` prepares for a call that has NOT happened yet. */
+export function seedCallPreparationFixture(db: EvalDb) {
+  return seedConversationFixture(db, {
+    status: "scheduled",
+    scheduledAt: new Date("2026-02-01T15:00:00Z"),
+  });
 }
 
 /** Env var the stub Notion client reads its (irrelevant) token from. Set by

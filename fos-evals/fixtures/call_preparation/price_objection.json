@@ -1,7 +1,8 @@
 {
   "fixture_id": "call_preparation.price_objection",
   "agent_key": "fos.call_preparation",
-  "description": "Prior evidence shows the applicant has already raised a price/cost concern. The agent must prepare the founder to handle it as a likely objection, not promise a discount or financing outcome in permittedClaims.",
+  "schema_version": 2,
+  "description": "Prior evidence shows the applicant has already raised a price/cost concern. The agent must prepare the founder to handle it as a likely objection, not promise a discount or financing outcome in permittedClaims. CONVERTED TO v2 (P1.10d-3). The v1 fixture also asserted `fos.call_preparation.no-prohibited-guarantee`, which this definition NO LONGER DECLARES \u2014 the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions` and the rest stays here, asserted by nothing.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000121",
@@ -22,7 +23,7 @@
       {
         "sourceRef": "application.raw_payload.comment",
         "sourceType": "application_field",
-        "content": "This looks great but the price is a lot for me right now — is there any flexibility or a payment plan?"
+        "content": "This looks great but the price is a lot for me right now \u2014 is there any flexibility or a payment plan?"
       }
     ],
     "availableClaims": [
@@ -31,17 +32,23 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.call_preparation.mode-allowed": "pass",
-      "fos.call_preparation.facts-resolve-to-sources": "pass",
-      "fos.call_preparation.no-prohibited-guarantee": "pass"
+      "fos.call_preparation.facts-resolve-to-sources": "pass"
     },
-    "output_schema_constraints": [
-      "likelyObjections[] includes a price/cost/payment-plan objection",
-      "topQuestions[] includes a question that would clarify budget/financing constraints",
-      "permittedClaims may reference the payment-plan claim ONLY as worded in availableClaims — it must not promise a specific discount amount or guaranteed approval",
-      "recommendedClose does not commit to a specific discount or payment amount — that is a founder decision"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "likelyObjections",
+        "op": "min_length",
+        "value": 1
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

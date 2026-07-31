@@ -1,7 +1,8 @@
 {
   "fixture_id": "call_preparation.incomplete_information",
   "agent_key": "fos.call_preparation",
-  "description": "A scheduled call with almost no prior evidence on file (e.g. the conversation was booked directly, with no application detail yet). The agent must surface criticalUnknowns/topQuestions rather than fabricate observed facts about the applicant.",
+  "schema_version": 2,
+  "description": "A scheduled call with almost no prior evidence on file (e.g. the conversation was booked directly, with no application detail yet). The agent must surface criticalUnknowns/topQuestions rather than fabricate observed facts about the applicant. CONVERTED TO v2 (P1.10d-3). The v1 fixture also asserted `fos.call_preparation.no-prohibited-guarantee`, which this definition NO LONGER DECLARES \u2014 the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions` and the rest stays here, asserted by nothing.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000111",
@@ -27,19 +28,23 @@
     "availableClaims": ["Our program includes weekly live coaching sessions."]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.call_preparation.mode-allowed": "pass",
-      "fos.call_preparation.facts-resolve-to-sources": "pass",
-      "fos.call_preparation.no-prohibited-guarantee": "pass"
+      "fos.call_preparation.facts-resolve-to-sources": "pass"
     },
-    "output_schema_constraints": [
-      "observedFacts is empty or contains only the one sourceRef actually present",
-      "criticalUnknowns[] is non-empty (e.g. no stated goal, no stated experience, no stated timeline)",
-      "topQuestions[] focuses on discovery (goal, background, timeline, budget) rather than assuming answers",
-      "no fabricated observedFacts entry claims something not present in evidenceRecords",
-      "meetingObjective frames the call as discovery-first, not a closing call"
-    ],
-    "notes": "Primary no-fabrication regression fixture for this agent, mirroring enrollment_brief.incomplete_information: a model that invents a plausible-sounding fact must be caught by factsResolveToSources at the gate layer."
-  }
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "criticalUnknowns",
+        "op": "min_length",
+        "value": 1
+      }
+    ]
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

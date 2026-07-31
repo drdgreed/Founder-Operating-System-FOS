@@ -51,6 +51,9 @@ import {
   fosEnrollmentBriefAgentDefinition,
   FOS_ENROLLMENT_BRIEF_AGENT_KEY,
   fosObjectionIntelligenceAgentDefinition,
+  fosCallPreparationAgentDefinition,
+  FOS_CALL_PREPARATION_AGENT_KEY,
+  FOS_CALL_PREPARATION_FEATURE_FLAG_KEY,
   FOS_OBJECTION_INTELLIGENCE_AGENT_KEY,
   FOS_OBJECTION_INTELLIGENCE_FEATURE_FLAG_KEY,
   FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
@@ -66,6 +69,7 @@ import {
   createEvalDb,
   seedEnrollmentBriefFixture,
   seedObjectionIntelligenceFixture,
+  seedCallPreparationFixture,
   setEvalFeatureFlag,
   createStubNotionClient,
   stubComplianceReviewer,
@@ -131,6 +135,30 @@ const ENROLLMENT_BRIEF_STUB_OUTPUT = {
  * problem, and is the run-1 failure shape (the model grounding honestly against
  * a vocabulary nobody showed it).
  */
+/**
+ * Stub payload for `fos.call_preparation`.
+ *
+ * `observedFacts[].sourceRef` and `permittedClaims` are REBOUND per fixture by
+ * the registry entry, to the evidence and claims that fixture actually supplies.
+ * A hardcoded sourceRef would fail `facts-resolve-to-sources` wherever evidence
+ * is spelled differently, and a hardcoded claim would put words in the founder's
+ * mouth that the claims registry never approved.
+ */
+const CALL_PREPARATION_STUB_OUTPUT = {
+  meetingObjective: "Confirm fit and agree the next concrete step.",
+  summary:
+    "The applicant is a working analyst exploring a move. Evidence is thin but consistent. " +
+    "The call should confirm motivation and surface any budget constraint.",
+  recommendedClose: "Agree a follow-up date and the evidence still needed.",
+  criticalUnknowns: ["Budget authority is not stated."],
+  topQuestions: ["What is prompting the move now?", "What does success look like in six months?"],
+  likelyObjections: ["Price may be a concern."],
+  permittedClaims: [] as string[],
+  claimsToAvoid: ["Any promise of a specific job, interview, or salary outcome."],
+  observedFacts: [{ statement: "Currently working as a Data Analyst.", sourceRef: "PLACEHOLDER" }],
+  inferences: [{ statement: "Likely motivated by career progression.", confidence: "medium" }],
+};
+
 const OBJECTION_INTELLIGENCE_STUB_OUTPUT = {
   objections: [
     {
@@ -282,6 +310,44 @@ const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
     },
     async prepare(db, input) {
       const seeded = await seedObjectionIntelligenceFixture(db);
+      const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      const person = { ...(input.person as Record<string, unknown>) };
+      const interaction = { ...(input.interaction as Record<string, unknown>) };
+      opportunity.id = seeded.opportunity.id;
+      opportunity.stage = seeded.opportunity.stage;
+      person.id = seeded.person.id;
+      interaction.id = seeded.interaction.id;
+      return {
+        workspaceId: seeded.workspace.id,
+        input: { ...input, opportunity, person, interaction },
+      };
+    },
+  },
+
+  [FOS_CALL_PREPARATION_AGENT_KEY]: {
+    fixtureDir: "call_preparation",
+    definition: fosCallPreparationAgentDefinition,
+    featureFlagKey: FOS_CALL_PREPARATION_FEATURE_FLAG_KEY,
+    stubOutput: (input) => {
+      // Ground the stub in what the FIXTURE supplies, for the same reason as
+      // objection_intelligence: a constant sourceRef fails
+      // `facts-resolve-to-sources` wherever evidence is spelled differently,
+      // which looks like the gate catching a real problem.
+      const records = (input.evidenceRecords as { sourceRef?: string }[] | undefined) ?? [];
+      const firstRef = records[0]?.sourceRef;
+      const claims = (input.availableClaims as string[] | undefined) ?? [];
+      return {
+        ...CALL_PREPARATION_STUB_OUTPUT,
+        // Only ever echo claims the input actually approved. Inventing one
+        // would be the exact failure `claimsToAvoid` exists to prevent.
+        permittedClaims: claims.slice(0, 1),
+        observedFacts: firstRef
+          ? CALL_PREPARATION_STUB_OUTPUT.observedFacts.map((f) => ({ ...f, sourceRef: firstRef }))
+          : [],
+      };
+    },
+    async prepare(db, input) {
+      const seeded = await seedCallPreparationFixture(db);
       const opportunity = { ...(input.opportunity as Record<string, unknown>) };
       const person = { ...(input.person as Record<string, unknown>) };
       const interaction = { ...(input.interaction as Record<string, unknown>) };
