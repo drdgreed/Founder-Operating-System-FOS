@@ -298,6 +298,16 @@ describe("classifier scope (P1.10f — driven by the second live run)", () => {
     expect(p).toContain("lean toward block / low-confidence");
   });
 
+  it("FOS1-GCLS-scope-08: naming a prohibited claim is separated from making it (F-X)", () => {
+    const p = GUARANTEE_CLASSIFIER_SYSTEM_PROMPT;
+    expect(p).toContain("NAMING A PROHIBITED CLAIM IS NOT MAKING IT");
+    // The line the whole section turns on.
+    expect(p).toContain("does the text COMMIT THE PROGRAM to an employment outcome");
+    // And the evasion guard must survive: a quotation that delivers the promise
+    // is still a block. Deleting this would trade one defect for a real hole.
+    expect(p).toContain("Frame does not launder a promise");
+  });
+
   it("FOS1-GCLS-scope-05: REGRESSION GUARD — the fail-closed wrapper is NOT loosened", async () => {
     // The fix belongs in the classifier's framing, never in the wrapper. A
     // low-confidence allow must STILL block: that rule is why this classifier

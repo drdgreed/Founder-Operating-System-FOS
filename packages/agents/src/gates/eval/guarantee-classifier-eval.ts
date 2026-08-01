@@ -152,7 +152,12 @@ async function runSet(
 ): Promise<SetResult> {
   const rows: Row[] = [];
   for (const entry of entries) {
-    const decision = await evaluateGuaranteeText(entry.text, deps);
+    // Grade each row under the floor policy it ACTUALLY runs under in
+    // production (F-X). A `reports_input` text graded with the floor final is
+    // being tested against behaviour that cannot occur.
+    const decision = await evaluateGuaranteeText(entry.text, deps, {
+      floorIsFinal: entry.voice !== "reports_input",
+    });
     rows.push({
       text: entry.text,
       expected: entry.expected,
