@@ -493,6 +493,17 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           cacheCreationInputTokens?: number;
           cacheReadInputTokens?: number;
         } | null) ?? { inputTokens: 0, outputTokens: 0 };
+        // F-Z: the stage-6 failures, read off the run row before this eval
+        // database is discarded. Without this the transcript says only THAT
+        // validation failed, never what — and the grader cannot diagnose it.
+        const evalJson = (runRow?.deterministicEvalJson ?? null) as {
+          issues?: unknown;
+        } | null;
+        const evaluationIssues =
+          result?.status === "evaluation_failed" && Array.isArray(evalJson?.issues)
+            ? evalJson.issues.map((issue) => String(issue))
+            : undefined;
+
         const usageInput = runUsage.inputTokens ?? 0;
         const usageOutput = runUsage.outputTokens ?? 0;
         // Carried through ONLY for a run that actually called the model. A stub
@@ -562,6 +573,9 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<RunTra
           },
           latency_ms: latencyMs,
           error: errorMessage ?? (result?.status === "error" ? (result.reason ?? "error") : null),
+          ...(evaluationIssues && evaluationIssues.length > 0
+            ? { evaluation_issues: evaluationIssues }
+            : {}),
         });
         transcripts.push(transcript);
         if (outPath) appendFileSync(outPath, JSON.stringify(transcript) + "\n", "utf8");

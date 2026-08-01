@@ -344,3 +344,18 @@ def test_fos1_grade_22_a_stub_run_is_never_a_promotion_signal() -> None:
     rendered = format_report(report, graded, 0.95, stub_run=True)
     assert "NOT PROMOTABLE" in rendered, "...but a stub run must still refuse promotion"
     assert "never the model" in rendered
+
+
+def test_fos1_grade_23_the_grader_surfaces_stage6_issues_inline() -> None:
+    # F-Z. "status is evaluation_failed" alone sends the reader looking for
+    # data that, until this landed, did not survive the run.
+    fixture = make_fixture(status=["succeeded"])
+    transcript = make_transcript(
+        status="evaluation_failed",
+        artifact=None,
+        evaluation_issues=["readiness: Invalid enum value", "objections: Required"],
+    )
+    result = grade_one(fixture, transcript)
+    detail = " ".join(f.detail for f in result.failures)
+    assert "validation failed:" in detail
+    assert "readiness: Invalid enum value" in detail

@@ -240,11 +240,19 @@ def grade_one(
         # did not is critical no matter what `critical_if_failed` says; a gate
         # that blocked when we hoped it would not is an ordinary failure.
         d63 = status == "succeeded" and "policy_blocked" in allowed_statuses
+        # Surface the stage-6 issues inline (F-Z). A grader that reports only
+        # "status is evaluation_failed" makes the reader go find the data —
+        # and until F-Z the data did not survive the run at all.
+        issues = transcript.get("evaluation_issues") or []
+        issue_detail = (
+            " — validation failed: " + "; ".join(str(i) for i in issues[:5]) if issues else ""
+        )
         result.failures.append(
             Failure(
                 "status",
                 f"status is {status!r}, expected one of {allowed_statuses!r}"
-                + (" — a run SUCCEEDED where a block was required" if d63 else ""),
+                + (" — a run SUCCEEDED where a block was required" if d63 else "")
+                + issue_detail,
                 critical=d63 or "status" in fixture.critical_if_failed,
             )
         )

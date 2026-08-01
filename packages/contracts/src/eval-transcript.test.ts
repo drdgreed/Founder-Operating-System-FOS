@@ -165,3 +165,31 @@ describe("F-B: transcriptKey is the grader's primary key, not run_id", () => {
     expect(transcriptKey(r0)).not.toBe(transcriptKey(r1));
   });
 });
+
+describe("F-Z: an evaluation_failed transcript must say WHY", () => {
+  it("FOS1-EVALTX-10: evaluation_failed WITHOUT issues is unconstructible", () => {
+    // Enforced at write time, so the defect cannot reach the grader at all.
+    expect(() =>
+      runTranscriptSchema.parse({ ...VALID, status: "evaluation_failed", artifact: null }),
+    ).toThrow(/must record the validation issues/);
+  });
+
+  it("FOS1-EVALTX-11: evaluation_failed WITH issues parses", () => {
+    const parsed = runTranscriptSchema.parse({
+      ...VALID,
+      status: "evaluation_failed",
+      artifact: null,
+      evaluation_issues: ["readiness: Invalid enum value", "(root): Required"],
+    });
+    expect(parsed.evaluation_issues).toHaveLength(2);
+  });
+
+  it("FOS1-EVALTX-12: issues on any OTHER status are rejected", () => {
+    // A runner reporting validation failures for a run that did not fail
+    // validation is a bug, and a silently-accepted one would mislead the
+    // grader in the opposite direction.
+    expect(() =>
+      runTranscriptSchema.parse({ ...VALID, evaluation_issues: ["nope: should not be here"] }),
+    ).toThrow(/only meaningful for evaluation_failed/);
+  });
+});
