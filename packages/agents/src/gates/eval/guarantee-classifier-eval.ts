@@ -157,6 +157,11 @@ async function runSet(
     // being tested against behaviour that cannot occur.
     const decision = await evaluateGuaranteeText(entry.text, deps, {
       floorIsFinal: entry.voice !== "reports_input",
+      // Tier 2 receives the field name as trusted framing in production
+      // (F-AA). Grading without it asks a harder question than production ever
+      // asks — the model said so itself, blocking a prohibition-list fragment
+      // "without a field name indicating this is a prohibited-claims list item".
+      field: entry.field,
     });
     rows.push({
       text: entry.text,

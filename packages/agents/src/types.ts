@@ -65,6 +65,10 @@ export interface ComplianceReviewOptions {
    * instead — never that the text is allowed. See `ComplianceReviewText.voice`.
    */
   floorIsFinal?: boolean;
+  /** The output FIELD NAME this text came from (F-AA). Definition-authored
+   * static policy, never input-derived — surfaced to tier 2 as framing so a
+   * bare fragment from a prohibition list is not read as a promise. */
+  field?: string;
 }
 
 /**

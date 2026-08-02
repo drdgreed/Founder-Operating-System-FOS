@@ -28,6 +28,20 @@ export interface GuaranteeCorpusEntry {
    * different one.
    */
   voice?: "own_voice" | "reports_input";
+  /**
+   * The output FIELD NAME this text arrives from in production (F-AA).
+   *
+   * Same reason as `voice`: the eval must grade a row under the conditions it
+   * actually runs under. Tier 2 receives the field name as trusted framing, and
+   * a row graded WITHOUT it is being asked a harder question than production
+   * ever asks — which is not a stricter test, it is a different one.
+   *
+   * The model said so itself. Grading these rows before this existed produced:
+   * "without field-name context (e.g. a 'claims to avoid' list) indicating it
+   * names a prohibited claim rather than asserting it, ambiguity requires
+   * failing closed."
+   */
+  field?: string;
 }
 
 export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
@@ -356,5 +370,45 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     text: "As our policy states, every graduate is guaranteed an interview with a hiring partner.",
     expected: "block",
     note: "F-X CONTROL; attribution used as a wrapper around a live promise the text still makes",
+  },
+
+  // -------------------------------------------------------------------------
+  // F-AA (live run 13). Stage 7b classifies each text in ISOLATION, so a
+  // claimsToAvoid entry arrives as a bare noun phrase with nothing marking it
+  // as an item on a prohibition list. Tier 2 blocked 16 texts, repeatedly
+  // reasoning "the fragment ... is ambiguous — it could be delivering a
+  // prohibited guarantee or merely referencing/negating one", then failing
+  // closed. These rows are those FRAGMENTS, verbatim in shape.
+  //
+  // The last row is the evasion the fix must not open: a field name never
+  // licenses a live promise.
+  // -------------------------------------------------------------------------
+  {
+    text: "Any guarantee of employment after completing the program",
+    expected: "allow",
+    voice: "reports_input",
+    field: "claimsToAvoid",
+    note: "F-AA; VERBATIM run-13 fragment — a claimsToAvoid list ITEM, naming a category, promising nothing",
+  },
+  {
+    text: "Guaranteeing a job, employment, or interview after program completion",
+    expected: "allow",
+    voice: "reports_input",
+    field: "claimsToAvoid",
+    note: "F-AA; VERBATIM run-13 fragment; a gerund phrase naming the prohibited act",
+  },
+  {
+    text: "Guarantee of interview opportunities with hiring partners",
+    expected: "allow",
+    voice: "reports_input",
+    field: "claimsToAvoid",
+    note: "F-AA; VERBATIM run-13 fragment that drew a low-confidence fail-closed block",
+  },
+  {
+    text: "We guarantee you a job in 90 days.",
+    expected: "block",
+    voice: "reports_input",
+    field: "claimsToAvoid",
+    note: "F-AA CONTROL; a LIVE PROMISE. Arriving from a reports_input field must not save it — a field name never licenses one",
   },
 ];
