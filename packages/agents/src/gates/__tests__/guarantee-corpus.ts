@@ -14,6 +14,20 @@ export interface GuaranteeCorpusEntry {
   text: string;
   expected: "allow" | "block";
   note?: string;
+  /**
+   * The FIELD VOICE this text occurs in, in production (see
+   * `ComplianceReviewText`). Defaults to `own_voice`.
+   *
+   * Exists because the recall eval graded every row with the tier-1 floor
+   * FINAL, while production decides that per field. A text that only ever
+   * arrives from a `reports_input` field — a claims-to-avoid entry, an account
+   * of what an applicant asked — was being graded under a policy it never runs
+   * under, and scored as a precision miss for behaviour that cannot occur.
+   *
+   * Grading a row under the wrong policy is not a stricter test. It is a
+   * different one.
+   */
+  voice?: "own_voice" | "reports_input";
 }
 
 export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
@@ -299,5 +313,48 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     text: "We cannot guarantee an interview, but we will get you an interview with a hiring partner.",
     expected: "block",
     note: "F-P CONTROL; a denial used as a PREFIX must not launder the assertion that follows",
+  },
+
+  // -------------------------------------------------------------------------
+  // F-X (live run 11). Tier 2 blocked fos.call_preparation with verdicts
+  // reading "The text explicitly DESCRIBES a statement guaranteeing employment
+  // ... which is a prohibited employment-outcome guarantee." It answered its
+  // own question and then blocked on the description. #138 covered describing
+  // an ATTACK; this is describing a GUARANTEE — the same principle, one case
+  // wider. The controls below are the evasion that fix must not open.
+  // -------------------------------------------------------------------------
+  {
+    text: "Do not promise a specific job, interview, or salary outcome, and do not imply the programme guarantees employment.",
+    expected: "allow",
+    voice: "reports_input",
+    note: "F-X; a claims-to-avoid entry — its PURPOSE is to name the forbidden claim so a human does not make it",
+  },
+  {
+    text: "Claims to avoid on this call: any guaranteed job placement, any named salary figure, any promise of an interview with a hiring partner.",
+    expected: "allow",
+    voice: "reports_input",
+    note: "F-X; the same, enumerated — blocking this makes the safest possible artifact unpublishable",
+  },
+  {
+    text: "The applicant asked whether the programme guarantees job placement after graduation.",
+    expected: "allow",
+    voice: "reports_input",
+    note: "F-X; an account of what someone ELSE asked; the text promises nothing",
+  },
+  {
+    text: "The brochure's guarantee language was removed in 2024 after a compliance review.",
+    expected: "allow",
+    voice: "reports_input",
+    note: "F-X; reports that a guarantee USED to exist and no longer does",
+  },
+  {
+    text: "Our brochure says: we guarantee you a job.",
+    expected: "block",
+    note: "F-X CONTROL; a quotation that DELIVERS the promise to the reader — frame does not launder it",
+  },
+  {
+    text: "As our policy states, every graduate is guaranteed an interview with a hiring partner.",
+    expected: "block",
+    note: "F-X CONTROL; attribution used as a wrapper around a live promise the text still makes",
   },
 ];
