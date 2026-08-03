@@ -187,4 +187,43 @@ describe("P-004 guard: the enrollment_brief propagation checklist, enforced for 
         "dry-run row into evaluation_failed: a harness that runs green while testing nothing.",
     ).toBe("function");
   });
+
+  it.each(entries)(
+    "FOS1-PROP-05: %s's stubOutput PARSES against its own output schema",
+    (agentKey, setup) => {
+      // FOS1-PROP-04 asserts the stub is a FUNCTION. It never asserted the
+      // shape it returns, and that gap shipped a real break: #157 restructured
+      // fos.call_preparation's output schema while its stub in EVAL_AGENTS kept
+      // the flat shape, so `--dry-run` on main went to
+      // {"evaluation_failed":7} — every row failing stage 6 — with the whole
+      // suite green. A stub that cannot satisfy its own agent's schema is a
+      // harness that runs and tests nothing.
+      //
+      // Driven with a REALISTIC minimal input, not an empty object. A stub is a
+      // function of the PREPARED input, and `prepare` always supplies the
+      // canonical entities — so requiring it to survive `{}` would test a shape
+      // production never produces (and did: it threw on `input.opportunity`).
+      //
+      // What IS realistic, and is kept, is EMPTY EVIDENCE. A stub must tolerate
+      // a fixture that supplies no evidence records, because it cites a
+      // sourceRef the fixture provides. A stub that assumes evidence exists
+      // fails on any fixture whose evidence is absent or spelled differently —
+      // the live-run-1 failure shape.
+      const output = setup.stubOutput({
+        opportunity: { id: "00000000-0000-4000-8000-000000000001", stage: "reviewing" },
+        person: { id: "00000000-0000-4000-8000-000000000002", firstName: "A", lastName: "B" },
+        evidenceRecords: [],
+        availableClaims: [],
+      });
+      const parsed = setup.definition.outputSchema.safeParse(output);
+      expect(
+        parsed.success,
+        parsed.success
+          ? ""
+          : `${agentKey}: stubOutput does not satisfy the definition's outputSchema — ` +
+              `--dry-run will report evaluation_failed for every fixture. Issues: ` +
+              JSON.stringify(parsed.error.issues.slice(0, 5)),
+      ).toBe(true);
+    },
+  );
 });

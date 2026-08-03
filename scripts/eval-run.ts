@@ -160,13 +160,21 @@ const CALL_PREPARATION_STUB_OUTPUT = {
     "The applicant is a working analyst exploring a move. Evidence is thin but consistent. " +
     "The call should confirm motivation and surface any budget constraint.",
   recommendedClose: "Agree a follow-up date and the evidence still needed.",
-  criticalUnknowns: ["Budget authority is not stated."],
-  topQuestions: ["What is prompting the move now?", "What does success look like in six months?"],
-  likelyObjections: ["Price may be a concern."],
-  permittedClaims: [] as string[],
-  claimsToAvoid: ["Any promise of a specific job, interview, or salary outcome."],
-  observedFacts: [{ statement: "Currently working as a Data Analyst.", sourceRef: "PLACEHOLDER" }],
-  inferences: [{ statement: "Likely motivated by career progression.", confidence: "medium" }],
+  callPlan: {
+    criticalUnknowns: ["Budget authority is not stated."],
+    topQuestions: ["What is prompting the move now?", "What does success look like in six months?"],
+    likelyObjections: ["Price may be a concern."],
+  },
+  claims: {
+    permittedClaims: [] as string[],
+    claimsToAvoid: ["Any promise of a specific job, interview, or salary outcome."],
+  },
+  grounding: {
+    observedFacts: [
+      { statement: "Currently working as a Data Analyst.", sourceRef: "PLACEHOLDER" },
+    ],
+    inferences: [{ statement: "Likely motivated by career progression.", confidence: "medium" }],
+  },
 };
 
 const OBJECTION_INTELLIGENCE_STUB_OUTPUT = {
@@ -417,12 +425,21 @@ export const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
       const claims = (input.availableClaims as string[] | undefined) ?? [];
       return {
         ...CALL_PREPARATION_STUB_OUTPUT,
-        // Only ever echo claims the input actually approved. Inventing one
-        // would be the exact failure `claimsToAvoid` exists to prevent.
-        permittedClaims: claims.slice(0, 1),
-        observedFacts: firstRef
-          ? CALL_PREPARATION_STUB_OUTPUT.observedFacts.map((f) => ({ ...f, sourceRef: firstRef }))
-          : [],
+        claims: {
+          ...CALL_PREPARATION_STUB_OUTPUT.claims,
+          // Only ever echo claims the input actually approved. Inventing one
+          // would be the exact failure `claimsToAvoid` exists to prevent.
+          permittedClaims: claims.slice(0, 1),
+        },
+        grounding: {
+          ...CALL_PREPARATION_STUB_OUTPUT.grounding,
+          observedFacts: firstRef
+            ? CALL_PREPARATION_STUB_OUTPUT.grounding.observedFacts.map((f) => ({
+                ...f,
+                sourceRef: firstRef,
+              }))
+            : [],
+        },
       };
     },
     async prepare(db, input) {
