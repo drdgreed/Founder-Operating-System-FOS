@@ -218,6 +218,45 @@ export type PersonalizedFollowUpOutput = z.infer<typeof personalizedFollowUpOutp
 
 // ---- Definition ------------------------------------------------------------
 
+/**
+ * The ONLY sourceRefs `facts-resolve-to-sources` will accept for this run.
+ * Defined ONCE and consumed by BOTH the gate and `promptVocabularies` below, so
+ * "what the model is told" and "what the gate enforces" are the same
+ * expression and cannot drift (#127, P-004).
+ *
+ * The failure this prevents has now happened twice on live runs (enrollment
+ * brief run 1, call preparation run 10): the model cited REAL input fields —
+ * `person.currentRole`, `opportunity.stage` — while the gate accepts only
+ * `evidenceRecords[].sourceRef` spellings, and the majority of runs blocked. It
+ * was grounding honestly against a vocabulary nobody had shown it.
+ */
+function selectCitableSourceRefs(input: PersonalizedFollowUpInput): string[] {
+  return input.evidenceRecords.map((r) => r.sourceRef);
+}
+
+/** The ONLY CTAs `cta-available` will accept. Shared with the gate below. */
+function selectAvailableCTAs(input: PersonalizedFollowUpInput): string[] {
+  return input.availableCTAs;
+}
+
+/** The ONLY claims `claims-in-approved-set` will accept. Shared with the gate. */
+function selectApprovedClaims(input: PersonalizedFollowUpInput): string[] {
+  return input.approvedClaims;
+}
+
+/**
+ * Capabilities the founder may reference. NOT gate-enforced (there is no
+ * capabilities gate — see the mechanical classification below, where
+ * `capabilitiesManifest` is a SCANNED field), so this is the one vocabulary
+ * with no gate to drift from. Surfaced anyway, for the same reason
+ * `call-preparation.ts` surfaces `permittedClaims`: a closed set stops the
+ * model inventing a capability the founder does not have — and here that
+ * invention would land in APPLICANT-FACING copy, not an internal brief.
+ */
+function selectReferenceableCapabilities(input: PersonalizedFollowUpInput): string[] {
+  return input.capabilities;
+}
+
 export const FOS_PERSONALIZED_FOLLOW_UP_AGENT_KEY = "fos.personalized_follow_up";
 export const FOS_PERSONALIZED_FOLLOW_UP_FEATURE_FLAG_KEY = "fos.personalized_follow_up";
 
@@ -247,6 +286,30 @@ export const fosPersonalizedFollowUpAgentDefinition: AgentDefinition<
   ],
   autonomyCeiling: "review",
   featureFlagKey: FOS_PERSONALIZED_FOLLOW_UP_FEATURE_FLAG_KEY,
+  /**
+   * #127, propagated here by P1.10d-6. Surfaced to the model verbatim in the
+   * user turn (see PromptVocabulary); the RULE about copying verbatim is static
+   * system-prompt policy, so no input-derived string reaches the policy channel
+   * (D9).
+   *
+   * Every entry reuses the SAME selector its gate enforces with, so the pair
+   * cannot drift. This agent has THREE gate-enforced closed sets — more than
+   * any agent wired so far — and all three block the run when missed, which
+   * makes the omission strictly more expensive here than on the two agents it
+   * has already cost a full live run.
+   */
+  promptVocabularies: (input) => [
+    { field: "personalizationSources[].sourceRef", allowed: selectCitableSourceRefs(input) },
+    { field: "primaryCTA", allowed: selectAvailableCTAs(input) },
+    // The highest-value entry. A model that PARAPHRASES an approved claim
+    // ("weekly coaching sessions are included") makes a claim the founder
+    // approved, in words the gate has never seen — a block that reads like the
+    // gate catching an unapproved claim.
+    { field: "claimsManifest", allowed: selectApprovedClaims(input) },
+    // Not gate-enforced; the stage-7b review is the only backstop (same
+    // situation and same rationale as call_preparation's `permittedClaims`).
+    { field: "capabilitiesManifest", allowed: selectReferenceableCapabilities(input) },
+  ],
   deterministicGates: [
     featureModeAllowedGate({
       key: "fos.personalized_follow_up.mode-allowed",
@@ -272,7 +335,7 @@ export const fosPersonalizedFollowUpAgentDefinition: AgentDefinition<
     recommendedPathwayAvailableGate<PersonalizedFollowUpInput, PersonalizedFollowUpOutput>({
       key: "fos.personalized_follow_up.cta-available",
       selectRecommendedPathway: (output) => output.primaryCTA,
-      selectAvailablePathways: (input) => input.availableCTAs,
+      selectAvailablePathways: selectAvailableCTAs,
       subjectLabel: "CTA",
       undeterminedValue: null,
     }),
@@ -281,14 +344,14 @@ export const fosPersonalizedFollowUpAgentDefinition: AgentDefinition<
     claimsInApprovedSetGate<PersonalizedFollowUpInput, PersonalizedFollowUpOutput>({
       key: "fos.personalized_follow_up.claims-in-approved-set",
       selectClaims: (output) => output.claimsManifest,
-      selectApprovedClaims: (input) => input.approvedClaims,
+      selectApprovedClaims,
     }),
     // Personalization grounding: every personalization statement's sourceRef
     // must resolve to an evidence record the model was actually given.
     factsResolveToSourcesGate<PersonalizedFollowUpInput, PersonalizedFollowUpOutput>({
       key: "fos.personalized_follow_up.facts-resolve-to-sources",
       selectObservedFacts: (output) => output.personalizationSources,
-      selectValidSourceRefs: (input) => input.evidenceRecords.map((r) => r.sourceRef),
+      selectValidSourceRefs: selectCitableSourceRefs,
     }),
     // ============================================================
     // MECHANICAL guarantee-scan classification (AGENT_LESSONS P-004).
@@ -324,14 +387,86 @@ export const fosPersonalizedFollowUpAgentDefinition: AgentDefinition<
   // eval-validated guarantee classifier replaces the removed keyword gate. Same
   // fields the old gate's `selectText` scanned (see the mechanical enumeration
   // above) — keep in sync with `buildBodyMarkdown`.
+  //
+  // Voice tagging (#140 / F-K), propagated here by P1.10d-6. Coverage is
+  // UNCHANGED — every text is still classified; only the appeal path differs.
+  //
+  //   own_voice     — the agent asserting something. Full floor, unappealable.
+  //   reports_input — a field whose PURPOSE is to describe untrusted input, so a
+  //                   `guarantee` near an employment noun means the agent is
+  //                   REPORTING a guarantee, not making one. The floor escalates
+  //                   to tier 2 (which reads meaning) instead of blocking.
+  //
+  // Per-field reasoning, made FRESH — this is the first agent whose output is
+  // OUTBOUND COPY, so the split is not the one the internal-brief agents use.
+  // The dividing question here is not "does this recount the call?" but "does
+  // this text get DELIVERED TO A PERSON?". `buildBodyMarkdown` answers it: the
+  // "## Message" section is what the applicant receives; the manifest and
+  // audit sections below it exist for the founder reviewing the draft.
+  //
+  //   subject — own_voice. It is sent. A guarantee in a subject line is a
+  //     guarantee MADE to the applicant, whatever prompted it.
+  //   body — own_voice, and the single most load-bearing tag in this file. It
+  //     IS the message. Note the counter-read that moved call_preparation's
+  //     `summary` to reports_input after live run 11: a follow-up body does in
+  //     practice recount what the applicant said. That analogy does NOT carry
+  //     here, because call_preparation's summary is an internal brief the
+  //     founder reads and this text is copy the APPLICANT reads. Recounting an
+  //     applicant's own words back to them in a sent message is still the
+  //     founder speaking. This field keeps the unappealable floor.
+  //   primaryCTA — own_voice. Also sent. Gate-restricted to `availableCTAs`,
+  //     but a founder-supplied CTA is not thereby licensed to promise an
+  //     outcome, and FOS1-FOLLOWUP-guarantee-cta exists for exactly that case.
+  //   claimsManifest — own_voice. Direct precedent: call_preparation's
+  //     `permittedClaims` stays own_voice because "a prohibited guarantee
+  //     smuggled into an APPROVED claim must still be blocked"
+  //     (FOS1-FOLLOWUP-guarantee-claim asserts it here too). Note this field is
+  //     NOT the mirror of `claimsToAvoid`: naming a forbidden claim is that
+  //     field's purpose, and MAKING a claim is this one's.
+  //   capabilitiesManifest — own_voice. It is the only scanned field with no
+  //     subset gate at all, and it asserts what the programme does.
+  //   personalizationSources[].statement — reports_input. Each entry MUST cite
+  //     an evidenceRecord (facts-resolve-to-sources), so it is by construction
+  //     a restatement of untrusted source content — the same class as every
+  //     other agent's `observedFacts`. It is rendered in the founder-facing
+  //     "## Personalization sources" audit section, NOT in the sent message.
+  //     FLAG, a live run could overturn this: if the model writes these as
+  //     ready-to-send sentences that a founder would paste into the body, the
+  //     "not delivered" premise weakens and the tag should move to own_voice.
+  //   riskFlags — reports_input. Its purpose is to warn the FOUNDER about the
+  //     draft and its evidence, which on this agent routinely means naming
+  //     guarantee language found in untrusted personalization content ("the
+  //     transcript asks for a guaranteed job offer"). Flooring that is F-K
+  //     verbatim — the failure that hard-blocked objection_intelligence's own
+  //     correct report of an injection. Not sent to anyone. FLAG: if a live run
+  //     shows riskFlags used to ASSERT rather than to warn, this moves.
   complianceReviewText: (output) => [
-    ...(output.subject ? [output.subject] : []),
-    output.body,
-    output.primaryCTA,
-    ...output.claimsManifest,
-    ...output.capabilitiesManifest,
-    ...output.personalizationSources.map((p) => p.statement),
-    ...output.riskFlags,
+    ...(output.subject
+      ? [{ text: output.subject, field: "subject", voice: "own_voice" as const }]
+      : []),
+    { text: output.body, field: "body", voice: "own_voice" as const },
+    { text: output.primaryCTA, field: "primaryCTA", voice: "own_voice" as const },
+    ...output.claimsManifest.map((text) => ({
+      text,
+      field: "claimsManifest",
+      voice: "own_voice" as const,
+    })),
+    ...output.capabilitiesManifest.map((text) => ({
+      text,
+      field: "capabilitiesManifest",
+      voice: "own_voice" as const,
+    })),
+    // --- reports_input: the two founder-facing audit sections ---------------
+    ...output.personalizationSources.map((p) => ({
+      text: p.statement,
+      field: "personalizationSources[].statement",
+      voice: "reports_input" as const,
+    })),
+    ...output.riskFlags.map((text) => ({
+      text,
+      field: "riskFlags",
+      voice: "reports_input" as const,
+    })),
   ],
   artifact: {
     // `followUpType` DRIVES the artifact type 1:1 (all six values are already

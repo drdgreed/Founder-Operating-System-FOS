@@ -53,6 +53,9 @@ import {
   fosObjectionIntelligenceAgentDefinition,
   fosCallPreparationAgentDefinition,
   fosPostCallSynthesisAgentDefinition,
+  fosPersonalizedFollowUpAgentDefinition,
+  FOS_PERSONALIZED_FOLLOW_UP_AGENT_KEY,
+  FOS_PERSONALIZED_FOLLOW_UP_FEATURE_FLAG_KEY,
   FOS_CALL_PREPARATION_AGENT_KEY,
   FOS_CALL_PREPARATION_FEATURE_FLAG_KEY,
   FOS_POST_CALL_SYNTHESIS_AGENT_KEY,
@@ -75,6 +78,7 @@ import {
   seedObjectionIntelligenceFixture,
   seedCallPreparationFixture,
   seedPostCallSynthesisFixture,
+  seedPersonalizedFollowUpFixture,
   setEvalFeatureFlag,
   createStubNotionClient,
   stubComplianceReviewer,
@@ -215,6 +219,44 @@ const POST_CALL_SYNTHESIS_STUB_OUTPUT = {
     "no decision was asked for yet.",
   observedFacts: [{ statement: "The call took place as scheduled.", sourceRef: "PLACEHOLDER" }],
   inferences: [{ statement: "Interest appears steady rather than urgent.", confidence: "medium" }],
+};
+
+/**
+ * Stub payload for `fos.personalized_follow_up`.
+ *
+ * FOUR fields are REBOUND per fixture by the registry entry, because this agent
+ * has THREE gate-enforced closed sets plus one ungated-but-scanned set, and a
+ * constant in any of them would fail a gate on every fixture spelled
+ * differently — which looks like a gate catching a real problem and is the
+ * live-run-1 failure shape:
+ *
+ *   primaryCTA           -> `cta-available` (no `undetermined` sentinel: EVERY
+ *                           value must be in `availableCTAs`)
+ *   claimsManifest       -> `claims-in-approved-set`
+ *   personalizationSources[].sourceRef -> `facts-resolve-to-sources`
+ *   capabilitiesManifest -> not gated, but it is applicant-facing copy; echoing
+ *                           only capabilities the founder supplied is the same
+ *                           discipline the claims set gets.
+ *
+ * Nothing here is applicant-facing prose worth grading — the dry run exercises
+ * the harness, never the model.
+ */
+const PERSONALIZED_FOLLOW_UP_STUB_OUTPUT = {
+  subject: "Following up on your application",
+  body:
+    "Hi, thanks again for the time you have already put into this. I wanted to check in and see " +
+    "whether you have any questions I can answer, and to make it easy to pick this back up " +
+    "whenever suits you.",
+  primaryCTA: "PLACEHOLDER",
+  claimsManifest: [] as string[],
+  capabilitiesManifest: [] as string[],
+  personalizationSources: [
+    {
+      statement: "You mentioned a three-month timeline for making your move.",
+      sourceRef: "PLACEHOLDER",
+    },
+  ],
+  riskFlags: ["The evidence for the applicant's timeline is a single self-reported source."],
 };
 
 export interface RunEvalSuiteOptions {
@@ -446,6 +488,62 @@ export const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
         workspaceId: seeded.workspace.id,
         input: { ...input, opportunity, person, interaction },
       };
+    },
+  },
+
+  [FOS_PERSONALIZED_FOLLOW_UP_AGENT_KEY]: {
+    fixtureDir: "personalized_follow_up",
+    definition: fosPersonalizedFollowUpAgentDefinition,
+    featureFlagKey: FOS_PERSONALIZED_FOLLOW_UP_FEATURE_FLAG_KEY,
+    stubOutput: (input) => {
+      const records = (input.evidenceRecords as { sourceRef?: string }[] | undefined) ?? [];
+      const firstRef = records[0]?.sourceRef;
+      const ctas = (input.availableCTAs as string[] | undefined) ?? [];
+      const claims = (input.approvedClaims as string[] | undefined) ?? [];
+      const capabilities = (input.capabilities as string[] | undefined) ?? [];
+      return {
+        ...PERSONALIZED_FOLLOW_UP_STUB_OUTPUT,
+        // `primaryCTA` is REQUIRED and the sentinel is disabled, so there is no
+        // legal "no CTA" value. A fixture supplying none cannot produce a
+        // passing output at all; emitting the marker makes the gate block for
+        // the true reason rather than the stub inventing a CTA.
+        primaryCTA: ctas[0] ?? "PLACEHOLDER (fixture supplied no availableCTAs)",
+        // Echo only what the input approved. Inventing a claim or a capability
+        // is the exact failure this agent's gates and its stage-7b scan exist
+        // to prevent, and it would be applicant-facing.
+        claimsManifest: claims.slice(0, 1),
+        capabilitiesManifest: capabilities.slice(0, 1),
+        // A fixture with NO evidence cannot legitimately personalize, so the
+        // stub cites nothing rather than an ungrounded ref the gate would
+        // (correctly) block.
+        personalizationSources: firstRef
+          ? PERSONALIZED_FOLLOW_UP_STUB_OUTPUT.personalizationSources.map((p) => ({
+              ...p,
+              sourceRef: firstRef,
+            }))
+          : [],
+      };
+    },
+    async prepare(db, input) {
+      const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      // Seed AT THE STAGE THE FIXTURE DECLARES, like post_call_synthesis. No
+      // gate on this agent reads the stage, but every fixture pairs a
+      // `followUpType` with the stage it only makes sense from (an
+      // `offer_follow_up` from `offered`, a `no_show_recovery` from
+      // `conversation_scheduled`), and the runner rebinds the seeded stage back
+      // onto the input — seeding a fixed stage would hand the model a
+      // self-contradictory brief.
+      const seeded = await seedPersonalizedFollowUpFixture(
+        db,
+        opportunity.stage as OpportunityStage,
+      );
+      const person = { ...(input.person as Record<string, unknown>) };
+      opportunity.id = seeded.opportunity.id;
+      opportunity.stage = seeded.opportunity.stage;
+      person.id = seeded.person.id;
+      // No `interaction` to rebind: this agent's input schema has none (see
+      // `seedPersonalizedFollowUpFixture`).
+      return { workspaceId: seeded.workspace.id, input: { ...input, opportunity, person } };
     },
   },
 };

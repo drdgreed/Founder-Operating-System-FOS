@@ -71,3 +71,22 @@ Cross-project process lessons (general git/validation discipline) live in `~/tas
 - Scope a relational assertion to constants used by **one** workload. Pointing it at a shared constant is what let this pass review.
 
 **Provenance:** PR #132 introduced it (P1.10j, fixing the run-3 timeout-as-verdict bug); live run 4, 2026-07-27, exposed it; P1.10n fixed it by making the timeout per-call-site (`GenerateStructuredInput.perAttemptTimeoutMs`, default `ANTHROPIC_GENERATION_TIMEOUT_MS = 120_000`; the classifier passes `ANTHROPIC_CLASSIFIER_TIMEOUT_MS = 12_000`). The replacement tests (`FOS1-RT-10`) were demonstrated to FAIL against the 12s default before the fix was kept.
+
+---
+
+## P-006 · In a git worktree, `@fos/*` resolves to the SHARED checkout — every cross-package verification is silently testing someone else's code
+
+**Symptom:** While wiring `fos.personalized_follow_up` (P1.10d-6) from an agent worktree, `npx vitest run scripts/__tests__/eval-agents-propagation.test.ts` failed FOS1-PROP-01/02 for `fos.post_call_synthesis` — an agent this branch had not touched, whose fixes were merged on main and present in the worktree's own files. `npx tsx scripts/eval-run.ts --dry-run` ran happily against agent definitions that did not match the source in front of me.
+
+**Cause:** the worktree has NO `node_modules` of its own. Node walks up from `<repo>/.claude/worktrees/<agent>/` and finds `<repo>/node_modules`, whose `@fos/*` entries are npm-workspace symlinks into the SHARED checkout's `packages/` — i.e. into whatever commit and whatever uncommitted state that checkout happens to be at. Relative imports (`../definitions/x.js`, `../eval-run.js`) come from the worktree; every bare `@fos/*` import comes from somewhere else. Nothing errors: a dry run, a package test, and `tsc` all succeed against the wrong sources, so the verification LOOKS clean while proving nothing about the branch.
+
+**Rule:** in any worktree, before believing a test/typecheck/script run that crosses a package boundary, resolve one bare specifier and check where it lands — `createRequire(import.meta.url).resolve("@fos/agents")` must print a path under the WORKTREE. If it does not, create the link set once (gitignored, no install needed):
+
+```
+mkdir -p <worktree>/node_modules/@fos
+ln -sfn <worktree>/packages/agents <worktree>/node_modules/@fos/agents   # + contracts, db, notion, adapter, apps/api
+```
+
+Node finds these first and still walks up for every third-party dependency, so nothing is duplicated. Re-run the full verification AFTER linking — the pre-link numbers are not evidence about this branch. Corollary: a shared checkout sitting on an old commit makes a worktree's "the other agents' dry-runs are unchanged" comparison meaningless in the interesting direction, because both sides read the same stale definitions.
+
+**Provenance:** P1.10d-6, 2026-08-03. The shared checkout was ~30 commits behind `origin/main` (its `post-call-synthesis.ts` had no `promptVocabularies`), so the propagation guard failed for an untouched agent. After linking, the same command passed 21/21 and the full suite ran 753 passed / 4 skipped.

@@ -1,7 +1,8 @@
 {
   "fixture_id": "personalized_follow_up.offer_follow_up_happy",
   "agent_key": "fos.personalized_follow_up",
-  "description": "Baseline happy path: an offer follow-up on a consented channel (email), one primary CTA drawn from availableCTAs, claims all in the approved set, and every personalization citing an evidence record. All gates pass; the result is an in_review DRAFT routed to founder approval — NEVER sent.",
+  "schema_version": 2,
+  "description": "Baseline happy path: an offer follow-up on a consented channel (email), one primary CTA drawn from availableCTAs, claims all in the approved set, and every personalization citing an evidence record. All gates pass; the result is an in_review DRAFT routed to founder approval — NEVER sent. CONVERTED TO v2 (P1.10d-6). The v1 fixture asserted the gate `fos.personalized_follow_up.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #109/#110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked: false` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: the body should read as a personalized message rather than a template (a judgment there is deliberately no operator for), and no send/Gmail-draft/HTTP path may be invoked — an invariant enforced by the ABSENCE of any projection or tool in the definition and asserted by the agent's own FOS1-FOLLOWUP-nosend unit test, which can read canonical state where a transcript grader cannot.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000801",
@@ -41,26 +42,31 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
-    "artifact": {
-      "artifactType": "offer_follow_up",
-      "domain": "enrollment",
-      "approvalStatus": "in_review",
-      "sent": false
-    },
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.personalized_follow_up.mode-allowed": "pass",
       "fos.personalized_follow_up.consent": "pass",
       "fos.personalized_follow_up.cta-available": "pass",
       "fos.personalized_follow_up.claims-in-approved-set": "pass",
-      "fos.personalized_follow_up.facts-resolve-to-sources": "pass",
-      "fos.personalized_follow_up.no-prohibited-guarantee": "pass"
+      "fos.personalized_follow_up.facts-resolve-to-sources": "pass"
     },
-    "output_schema_constraints": [
-      "exactly one primaryCTA, and it is a member of availableCTAs",
-      "every claimsManifest[] entry is a member of approvedClaims",
-      "every personalizationSources[].sourceRef is present in evidenceRecords",
-      "no guarantee language anywhere in subject/body/primaryCTA/claims/capabilities/personalization/riskFlags"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "primaryCTA",
+        "op": "in",
+        "value": ["Book a 15-minute call", "Reply to confirm your spot"]
+      },
+      {
+        "path": "personalizationSources",
+        "op": "min_length",
+        "value": 1
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

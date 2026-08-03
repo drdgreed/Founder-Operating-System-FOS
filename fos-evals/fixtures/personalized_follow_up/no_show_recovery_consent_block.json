@@ -1,7 +1,8 @@
 {
   "fixture_id": "personalized_follow_up.no_show_recovery_consent_block",
   "agent_key": "fos.personalized_follow_up",
-  "description": "A no-show recovery drafted for SMS, but only email consent is on record. Option-B (fail-closed) consent BLOCKS the draft — a non-consented channel never proceeds, and no artifact is created.",
+  "schema_version": 2,
+  "description": "A no-show recovery drafted for SMS, but only email consent is on record. Option-B (fail-closed) consent BLOCKS the draft — a non-consented channel never proceeds, and no artifact is created. This is the ONE fixture in this suite that REQUIRES a block and can honestly demand it: the consent gate reads `input.channel` against `input.consentedChannels`, both caller-supplied, so the block is determined entirely by the input and cannot depend on the model behaving badly (contrast the three sibling fixtures, whose v1 expectations DID depend on it — see their descriptions). `status` is therefore critical_if_failed: a `succeeded` here means the runtime drafted outbound copy for a channel with no recorded consent, which is D6.3's dangerous asymmetry on the highest-stakes agent in the system. CONVERTED TO v2 (P1.10d-6): the v1 outcome vocabulary was pass|block and v2's is pass|fail; gates after `consent` are not asserted because `evaluateGates` short-circuits at the first block and never reaches them (design section 5, rules 2 and 3). Remaining v1 prose, asserted by nothing: the block reason should match 'no recorded consent' (a substring judgment there is deliberately no operator for), and ZERO artifact rows are written — asserted by the agent's FOS1-FOLLOWUP-consent-block unit test, which can count rows where a transcript grader cannot.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000811",
@@ -28,15 +29,17 @@
     ]
   },
   "expected": {
-    "status": "policy_blocked",
-    "artifact": null,
+    "status": ["policy_blocked"],
     "gate_outcomes": {
       "fos.personalized_follow_up.mode-allowed": "pass",
-      "fos.personalized_follow_up.consent": "block"
+      "fos.personalized_follow_up.consent": "fail"
     },
-    "output_schema_constraints": [
-      "run is policy_blocked at consent with reason matching 'no recorded consent'",
-      "zero artifact rows are written"
-    ]
-  }
+    "artifact_version_status": ["draft"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": null,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": []
+  },
+  "critical_if_failed": ["status"]
 }

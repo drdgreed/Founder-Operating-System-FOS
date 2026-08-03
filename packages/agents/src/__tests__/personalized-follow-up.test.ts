@@ -10,6 +10,7 @@ import {
 } from "@fos/db/schema";
 import type { RunAgentContext } from "../types.js";
 import { runAgent } from "../pipeline.js";
+import { buildPrompt } from "../prompt.js";
 import {
   fosPersonalizedFollowUpAgentDefinition,
   FOS_PERSONALIZED_FOLLOW_UP_AGENT_KEY,
@@ -555,5 +556,82 @@ describe("fos.personalized_follow_up (issue #82) — external-facing DRAFT, no a
 
     // Injection did NOT trigger any autonomous approval/send.
     expect(await ctx.db.select().from(approval)).toHaveLength(0);
+  });
+
+  it("FOS1-FOLLOWUP-vocab: ANTI-DRIFT — every advertised vocabulary value is accepted by the gate that enforces it, and no value reaches the system prompt (D9)", async () => {
+    // Modeled on FOS1-VOCAB-05. A vocabulary that drifts from its gate is worse
+    // than none: the model would be confidently told a value its own gate
+    // rejects — the P-004 failure shape, caught structurally here rather than
+    // by inspection. This agent has THREE gate-enforced closed sets, so it has
+    // three ways to drift.
+    const fixture = await seedPersonalizedFollowUpFixture(ctx.db);
+    const input = buildInput(fixture);
+    const prompt = buildPrompt(fosPersonalizedFollowUpAgentDefinition, {
+      manifest: { scopes: [] },
+      input,
+    } as never);
+    const advertised = (
+      JSON.parse(prompt.userContent) as { allowedValues: Record<string, string[]> }
+    ).allowedValues;
+
+    const gates = fosPersonalizedFollowUpAgentDefinition.deterministicGates;
+    const gate = (suffix: string) => gates.find((g) => g.key.endsWith(suffix))!;
+    const evaluate = (g: (typeof gates)[number], output: unknown) =>
+      g.evaluate({
+        workspaceId: "w",
+        agentKey: FOS_PERSONALIZED_FOLLOW_UP_AGENT_KEY,
+        mode: "review",
+        input,
+        output,
+      } as never);
+
+    for (const cta of advertised["primaryCTA"]!) {
+      const verdict = await evaluate(gate("cta-available"), { primaryCTA: cta });
+      expect(verdict.allowed, `gate rejected advertised CTA "${cta}"`).toBe(true);
+    }
+    for (const claim of advertised["claimsManifest"]!) {
+      const verdict = await evaluate(gate("claims-in-approved-set"), {
+        claimsManifest: [claim],
+      });
+      expect(verdict.allowed, `gate rejected advertised claim "${claim}"`).toBe(true);
+    }
+    for (const ref of advertised["personalizationSources[].sourceRef"]!) {
+      const verdict = await evaluate(gate("facts-resolve-to-sources"), {
+        personalizationSources: [{ statement: "s", sourceRef: ref }],
+      });
+      expect(verdict.allowed, `gate rejected advertised sourceRef "${ref}"`).toBe(true);
+    }
+
+    // `capabilitiesManifest` has no gate to check against — it is the one
+    // vocabulary surfaced purely to stop the model inventing a capability, so
+    // assert only that it is exactly the founder-supplied set.
+    expect(advertised["capabilitiesManifest"]).toEqual(input.capabilities);
+
+    // D9: the RULE is static policy, the VALUES stay in the data channel.
+    expect(prompt.systemPrompt).toContain("VERBATIM");
+    expect(prompt.systemPrompt).not.toContain("Book a 15-minute call");
+    expect(prompt.systemPrompt).not.toContain("application.raw_payload.goal");
+  });
+
+  it("FOS1-FOLLOWUP-voice: the two founder-facing audit fields report input; every SENT field keeps the unappealable floor", () => {
+    // The tags are a judgment per schema, and the judgment that matters here is
+    // the one no other agent has had to make: this agent's output is OUTBOUND
+    // COPY. A `reports_input` tag on a field the applicant actually receives
+    // would let the tier-1 floor be appealed on a live promise.
+    const entries = fosPersonalizedFollowUpAgentDefinition.complianceReviewText!(buildOutput()).map(
+      (e) => (typeof e === "string" ? { field: "(untagged)", voice: "own_voice" } : e),
+    );
+    const voiceOf = (field: string) => entries.find((e) => e.field === field)?.voice;
+
+    // Rendered into the "## Message" section — delivered to a person.
+    expect(voiceOf("subject")).toBe("own_voice");
+    expect(voiceOf("body")).toBe("own_voice");
+    expect(voiceOf("primaryCTA")).toBe("own_voice");
+    // Asserted by the agent about the programme, and applicant-facing.
+    expect(voiceOf("claimsManifest")).toBe("own_voice");
+    expect(voiceOf("capabilitiesManifest")).toBe("own_voice");
+    // Founder-facing audit sections that restate untrusted evidence (F-K).
+    expect(voiceOf("personalizationSources[].statement")).toBe("reports_input");
+    expect(voiceOf("riskFlags")).toBe("reports_input");
   });
 });
