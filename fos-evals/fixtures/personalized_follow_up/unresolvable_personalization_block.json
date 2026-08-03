@@ -1,7 +1,8 @@
 {
   "fixture_id": "personalized_follow_up.unresolvable_personalization_block",
   "agent_key": "fos.personalized_follow_up",
-  "description": "An initial-response follow-up whose personalization cites a sourceRef that is not present in evidenceRecords. The facts-resolve-to-sources gate blocks — every personalization must be grounded in a source the model was actually given.",
+  "schema_version": 2,
+  "description": "An initial-response follow-up with exactly ONE evidence record, on an opportunity whose other fields (targetRole, stage) are tempting but are NOT citable — the sourceRef vocabulary is `evidenceRecords[].sourceRef` and nothing else. CONVERTED TO v2 (P1.10d-6), and the conversion INVERTED the direction of this fixture — the file name is kept because the subject is unchanged (it still targets facts-resolve-to-sources), only the assertable direction changed. v1 expected the model to cite 'nonexistent.ref' and the gate to block; a fixture cannot require the model to misbehave (F-D, eval-fixture.ts), and under D6.3 a correct run would have been graded a CRITICAL failure for succeeding. The gate's blocking path is covered deterministically by FOS1-FOLLOWUP-personalization-unresolvable with an injected non-compliant output. What this fixture now measures is the live behaviour that actually failed twice in production (#127, live runs 1 and 10): the model citing a REAL input field it was never told was uncitable — `person.currentRole`, `opportunity.stage` — instead of the one evidence sourceRef it was given. It is therefore the direct live check on this agent's new `promptVocabularies`. v1 also asserted `fos.personalized_follow_up.no-prohibited-guarantee`, which this definition NO LONGER DECLARES (replaced by the stage-7b classifier in #109/#110) — asserting it would now be a distinct grader failure under design section 5 rule 4.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000841",
@@ -28,18 +29,26 @@
     ]
   },
   "expected": {
-    "status": "policy_blocked",
-    "artifact": null,
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.personalized_follow_up.mode-allowed": "pass",
       "fos.personalized_follow_up.consent": "pass",
       "fos.personalized_follow_up.cta-available": "pass",
       "fos.personalized_follow_up.claims-in-approved-set": "pass",
-      "fos.personalized_follow_up.facts-resolve-to-sources": "block"
+      "fos.personalized_follow_up.facts-resolve-to-sources": "pass"
     },
-    "output_schema_constraints": [
-      "a personalizationSources[].sourceRef (e.g. 'nonexistent.ref') is absent from evidenceRecords",
-      "run is policy_blocked at facts-resolve-to-sources; zero artifact rows"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "primaryCTA",
+        "op": "equals",
+        "value": "Reply to get started"
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

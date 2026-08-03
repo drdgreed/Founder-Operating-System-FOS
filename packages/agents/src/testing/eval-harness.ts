@@ -170,6 +170,37 @@ async function seedConversationFixture(
   interactionValues: { status: string; occurredAt?: Date; scheduledAt?: Date },
   opportunityStage: OpportunityStage = "reviewing",
 ) {
+  const graph = await seedOpportunityGraph(db, opportunityStage);
+
+  const [interactionRow] = await db
+    .insert(interaction)
+    .values({
+      workspaceId: graph.workspace.id,
+      opportunityId: graph.opportunity.id,
+      interactionType: "discovery_call",
+      version: 1,
+      ...interactionValues,
+    })
+    .returning();
+  if (!interactionRow)
+    throw new Error("seedConversationFixture: interaction insert returned no row");
+
+  return { ...graph, interaction: interactionRow };
+}
+
+/**
+ * The canonical rows EVERY enrollment-shaped agent reasons over, with NO
+ * interaction: workspace, product, person, enrollment opportunity.
+ *
+ * Extracted from `seedConversationFixture` (a pure extraction — same inserts,
+ * same order, same values) for `fos.personalized_follow_up`, whose input schema
+ * has no `interaction` field at all. Seeding an interaction row that agent's
+ * input cannot reference would imply a relationship the definition does not
+ * have; its own unit-test seeder (`__tests__/test-db.ts`) seeds exactly these
+ * four rows, and this keeps the eval harness honest to the same shape without
+ * duplicating them.
+ */
+async function seedOpportunityGraph(db: EvalDb, opportunityStage: OpportunityStage = "reviewing") {
   const workspace = await seedEvalWorkspace(db);
 
   const [prod] = await db
@@ -182,7 +213,7 @@ async function seedConversationFixture(
       parentProductId: null,
     })
     .returning();
-  if (!prod) throw new Error("seedConversationFixture: product insert returned no row");
+  if (!prod) throw new Error("seedOpportunityGraph: product insert returned no row");
 
   const [personRow] = await db
     .insert(person)
@@ -197,7 +228,7 @@ async function seedConversationFixture(
       lifecycleType: "applicant",
     })
     .returning();
-  if (!personRow) throw new Error("seedConversationFixture: person insert returned no row");
+  if (!personRow) throw new Error("seedOpportunityGraph: person insert returned no row");
 
   const [opportunity] = await db
     .insert(enrollmentOpportunity)
@@ -211,28 +242,9 @@ async function seedConversationFixture(
     })
     .returning();
   if (!opportunity)
-    throw new Error("seedConversationFixture: enrollment_opportunity insert returned no row");
+    throw new Error("seedOpportunityGraph: enrollment_opportunity insert returned no row");
 
-  const [interactionRow] = await db
-    .insert(interaction)
-    .values({
-      workspaceId: workspace.id,
-      opportunityId: opportunity.id,
-      interactionType: "discovery_call",
-      version: 1,
-      ...interactionValues,
-    })
-    .returning();
-  if (!interactionRow)
-    throw new Error("seedConversationFixture: interaction insert returned no row");
-
-  return {
-    workspace,
-    product: prod,
-    person: personRow,
-    opportunity,
-    interaction: interactionRow,
-  };
+  return { workspace, product: prod, person: personRow, opportunity };
 }
 
 /** `fos.objection_intelligence` classifies objections from a call that HAPPENED. */
@@ -262,6 +274,24 @@ export function seedPostCallSynthesisFixture(db: EvalDb, opportunityStage: Oppor
     { status: "completed", occurredAt: new Date("2026-01-15T15:00:00Z") },
     opportunityStage,
   );
+}
+
+/**
+ * `fos.personalized_follow_up` drafts outbound copy for an opportunity. NO
+ * interaction is seeded: unlike the three conversation agents, this agent's
+ * input schema has no `interaction` field, so there is nothing for the runner
+ * to rebind and no path by which an interaction row could reach the model.
+ *
+ * The stage is a required parameter rather than defaulted, because every
+ * fixture declares the stage its follow-up TYPE only makes sense from (an
+ * `offer_follow_up` from `offered`, a `no_show_recovery` from
+ * `conversation_scheduled`), and the runner rebinds the seeded stage back onto
+ * the input. Defaulting it would silently rewrite that context to `reviewing`
+ * for every fixture. Note this is coherence, not a gate: no gate on this agent
+ * reads the stage (contrast `fos.post_call_synthesis`, where it is load-bearing).
+ */
+export function seedPersonalizedFollowUpFixture(db: EvalDb, opportunityStage: OpportunityStage) {
+  return seedOpportunityGraph(db, opportunityStage);
 }
 
 /** Env var the stub Notion client reads its (irrelevant) token from. Set by
