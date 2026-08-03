@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 import {
   agentRun,
   approval,
@@ -79,30 +80,36 @@ function buildOutput(overrides: Partial<CallPreparationOutput> = {}): CallPrepar
       "She has expressed interest in the accelerated track and has budget for coursework hours. " +
       "The call should confirm timeline expectations and address any pricing questions.",
     recommendedClose: "Propose the accelerated track and offer to send an enrollment agreement.",
-    criticalUnknowns: ["Exact weekly time budget she can commit."],
-    topQuestions: ["How many hours per week can you commit to coursework?"],
-    likelyObjections: ["May be concerned about balancing this with her current job."],
-    permittedClaims: ["Our program includes weekly live coaching sessions."],
-    // Deliberately phrased WITHOUT a guarantee, so the fixture default itself
-    // doesn't trip the stage-7b compliance review the way a real smuggled claim
-    // would (see FOS1-CALLPREP-03, which tests that case explicitly).
-    claimsToAvoid: ["Specific earnings or placement-timeline figures should not be cited."],
-    observedFacts: [
-      {
-        statement: "Applicant currently works as a Data Analyst at Acme Corp.",
-        sourceRef: "person.current_role",
-      },
-      {
-        statement: "Applicant wants to move into a senior analyst role within 3 months.",
-        sourceRef: "application.raw_payload.goal",
-      },
-    ],
-    inferences: [
-      {
-        statement: "Applicant likely has intermediate SQL proficiency given their current role.",
-        confidence: "medium",
-      },
-    ],
+    callPlan: {
+      criticalUnknowns: ["Exact weekly time budget she can commit."],
+      topQuestions: ["How many hours per week can you commit to coursework?"],
+      likelyObjections: ["May be concerned about balancing this with her current job."],
+    },
+    claims: {
+      permittedClaims: ["Our program includes weekly live coaching sessions."],
+      // Deliberately phrased WITHOUT a guarantee, so the fixture default itself
+      // doesn't trip the stage-7b compliance review the way a real smuggled claim
+      // would (see FOS1-CALLPREP-03, which tests that case explicitly).
+      claimsToAvoid: ["Specific earnings or placement-timeline figures should not be cited."],
+    },
+    grounding: {
+      observedFacts: [
+        {
+          statement: "Applicant currently works as a Data Analyst at Acme Corp.",
+          sourceRef: "person.current_role",
+        },
+        {
+          statement: "Applicant wants to move into a senior analyst role within 3 months.",
+          sourceRef: "application.raw_payload.goal",
+        },
+      ],
+      inferences: [
+        {
+          statement: "Applicant likely has intermediate SQL proficiency given their current role.",
+          confidence: "medium",
+        },
+      ],
+    },
     ...overrides,
   };
 }
@@ -170,9 +177,12 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
     const modelClient = new FakeModelClient([
       validResult(
         buildOutput({
-          observedFacts: [
-            { statement: "Applicant has a PhD in astrophysics.", sourceRef: "nonexistent.ref" },
-          ],
+          grounding: {
+            ...buildOutput().grounding,
+            observedFacts: [
+              { statement: "Applicant has a PhD in astrophysics.", sourceRef: "nonexistent.ref" },
+            ],
+          },
         }),
       ),
     ]);
@@ -211,7 +221,10 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
     const modelClient = new FakeModelClient([
       validResult(
         buildOutput({
-          permittedClaims: ["We guarantee you a job offer within 30 days of graduating."],
+          claims: {
+            ...buildOutput().claims,
+            permittedClaims: ["We guarantee you a job offer within 30 days of graduating."],
+          },
         }),
       ),
     ]);
@@ -240,19 +253,59 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
 
     const missingSourceRef = callPreparationOutputSchema.safeParse(
       buildOutput({
-        observedFacts: [{ statement: "A fact with no source." } as never],
+        grounding: {
+          ...validOutput.grounding,
+          observedFacts: [{ statement: "A fact with no source." } as never],
+        },
       }),
     );
     expect(missingSourceRef.success).toBe(false);
 
     const inferenceAsFact = callPreparationOutputSchema.safeParse(
       buildOutput({
-        observedFacts: [
-          { statement: "Applicant is probably a strong fit.", confidence: "high" } as never,
-        ],
+        grounding: {
+          ...validOutput.grounding,
+          observedFacts: [
+            { statement: "Applicant is probably a strong fit.", confidence: "high" } as never,
+          ],
+        },
       }),
     );
     expect(inferenceAsFact.success).toBe(false);
+  });
+
+  it("FOS1-CALLPREP-11 (F-Y): the output shape keeps ZERO top-level arrays — the grouping is the fix", () => {
+    // The defect this shape exists for: with 7 top-level array fields (five of
+    // them bare array<string>) the model intermittently emitted them as strings
+    // containing <item> markup. A measured probe put the flat shape at 3/5 and
+    // this one at 5/5 (F-Y note on the schema). Anyone flattening a group back
+    // out — the natural "simplification" — undoes that silently, so it is
+    // pinned mechanically rather than left to the comment.
+    const topLevel = Object.entries(callPreparationOutputSchema.shape);
+    const topLevelArrays = topLevel
+      .filter(([, node]) => node instanceof z.ZodArray)
+      .map(([key]) => key);
+    expect(
+      topLevelArrays,
+      `array fields promoted back to the top level: ${topLevelArrays.join(", ")}`,
+    ).toEqual([]);
+    // ...and every array still exists, one level down.
+    const nestedArrayPaths = topLevel.flatMap(([key, node]) =>
+      node instanceof z.ZodObject
+        ? Object.entries(node.shape as Record<string, z.ZodType>)
+            .filter(([, child]) => child instanceof z.ZodArray)
+            .map(([child]) => `${key}.${child}`)
+        : [],
+    );
+    expect(nestedArrayPaths.sort()).toEqual([
+      "callPlan.criticalUnknowns",
+      "callPlan.likelyObjections",
+      "callPlan.topQuestions",
+      "claims.claimsToAvoid",
+      "claims.permittedClaims",
+      "grounding.inferences",
+      "grounding.observedFacts",
+    ]);
   });
 
   it("FOS1-CALLPREP-05: shadow mode — no founder-surfaced output, artifact stays draft", async () => {
@@ -519,5 +572,131 @@ describe("fos.call_preparation (issue #60) — read-context to artifact only, no
     );
     expect(result.status).toBe("succeeded");
     expect(await ctx.db.select().from(enrollmentAssessment)).toHaveLength(0);
+  });
+});
+
+/**
+ * The `FOS1-EB-VOICE-*` suite (enrollment-brief), written for this agent. It
+ * did not exist here, and the F-Y restructure is exactly the change that would
+ * have silently dropped a field from stage-7b coverage: every compliance field
+ * name and every rendered path moved at once.
+ *
+ * These assert against the SCHEMA, never against anyone's memory of which
+ * fields exist.
+ */
+describe("F-K/F-Y: compliance-text VOICE tagging is mechanically checkable", () => {
+  /** Every leaf path of the (now nested) output schema, in `a.b` form — the
+   * same notation `complianceReviewText` and `promptVocabularies` use. */
+  function leafPaths(schema: z.ZodObject<z.ZodRawShape>, prefix = ""): string[] {
+    return Object.entries(schema.shape).flatMap(([key, node]) =>
+      node instanceof z.ZodObject
+        ? leafPaths(node as z.ZodObject<z.ZodRawShape>, `${prefix}${key}.`)
+        : [`${prefix}${key}`],
+    );
+  }
+
+  const OUTPUT = buildOutput();
+  const entries = fosCallPreparationAgentDefinition.complianceReviewText!(OUTPUT);
+  const tagged = entries.filter((e) => typeof e !== "string");
+
+  it("FOS1-CALLPREP-VOICE-01: every entry is tagged — no bare strings slipped through", () => {
+    // A bare string silently defaults to own_voice. Right for an unmigrated
+    // definition; in a migrated one it means a field was added without a
+    // decision being made about its voice.
+    expect(entries.filter((e) => typeof e === "string")).toEqual([]);
+  });
+
+  it("FOS1-CALLPREP-VOICE-02: every tagged field name is a real path of the output schema", () => {
+    const paths = new Set(leafPaths(callPreparationOutputSchema));
+    const unknown = [...new Set(tagged.map((e) => e.field))].filter((f) => !paths.has(f));
+    expect(unknown, `field names not present in the output schema: ${unknown.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("FOS1-CALLPREP-VOICE-03: the reports_input set is PINNED — widening it removes floor coverage", () => {
+    // Every field moved into reports_input gives up the unappealable tier-1
+    // block for that field. A deliberate safety trade, never a drive-by edit.
+    const reportsInput = [
+      ...new Set(tagged.filter((e) => e.voice === "reports_input").map((e) => e.field)),
+    ].sort();
+    expect(reportsInput).toEqual([
+      "callPlan.criticalUnknowns",
+      "callPlan.likelyObjections",
+      "claims.claimsToAvoid",
+      "grounding.observedFacts",
+      "summary",
+    ]);
+  });
+
+  it("FOS1-CALLPREP-VOICE-04: permittedClaims and claimsToAvoid stay DISTINGUISHABLE, with opposite voices", () => {
+    // The load-bearing pair. `claims.permittedClaims` is the agent asserting
+    // what the founder may say, so it keeps the full unappealable floor — a
+    // guarantee smuggled in there must still be blocked (FOS1-CALLPREP-03).
+    // `claims.claimsToAvoid` exists to NAME prohibited claims, so it
+    // necessarily quotes the language the floor looks for and cannot be finally
+    // blocked for naming it. Merging the two, or equalising their voices, is
+    // the one restructure this agent must never make.
+    const voiceOf = (field: string) => [
+      ...new Set(tagged.filter((e) => e.field === field).map((e) => e.voice)),
+    ];
+    expect(voiceOf("claims.permittedClaims")).toEqual(["own_voice"]);
+    expect(voiceOf("claims.claimsToAvoid")).toEqual(["reports_input"]);
+  });
+
+  it("FOS1-CALLPREP-VOICE-05: inferences stay own_voice — it is where a smuggled promise would live", () => {
+    const inferenceVoices = tagged
+      .filter((e) => e.field === "grounding.inferences")
+      .map((e) => e.voice);
+    expect(inferenceVoices).toEqual(["own_voice"]);
+  });
+
+  it("FOS1-CALLPREP-VOICE-06: every free-text output field is still SCANNED — coverage is unchanged", () => {
+    // The F-Y restructure changes where fields LIVE, never what is classified.
+    // This enumerates the schema mechanically and requires each free-text leaf
+    // to appear. This agent has no closed-enum top-level field, so the
+    // exclusion list the enrollment-brief version needs is empty here.
+    const scanned = new Set(tagged.map((e) => e.field));
+    const missing = leafPaths(callPreparationOutputSchema).filter((p) => !scanned.has(p));
+    expect(
+      missing,
+      `free-text fields rendered but never classified: ${missing.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("FOS1-CALLPREP-VOICE-07: every schema leaf is RENDERED into the founder-facing brief", () => {
+    // The other half of the F-Y risk: a field that stops being rendered is a
+    // silent regression no compliance check would notice. Asserts the actual
+    // values, not the field names, so a renamed section heading is fine and a
+    // dropped list is not.
+    const input: CallPreparationInput = {
+      opportunity: { id: "00000000-0000-4000-8000-000000000001", stage: "conversation_scheduled" },
+      person: {
+        id: "00000000-0000-4000-8000-000000000002",
+        firstName: "Ada",
+        lastName: "Lovelace",
+      },
+      interaction: {
+        id: "00000000-0000-4000-8000-000000000003",
+        interactionType: "discovery_call",
+      },
+      evidenceRecords: [],
+      availableClaims: [],
+    };
+    const body = fosCallPreparationAgentDefinition.artifact!.buildBodyMarkdown!(input, OUTPUT);
+    const rendered = [
+      OUTPUT.meetingObjective,
+      OUTPUT.summary,
+      OUTPUT.recommendedClose,
+      ...OUTPUT.callPlan.criticalUnknowns,
+      ...OUTPUT.callPlan.topQuestions,
+      ...OUTPUT.callPlan.likelyObjections,
+      ...OUTPUT.claims.permittedClaims,
+      ...OUTPUT.claims.claimsToAvoid,
+      ...OUTPUT.grounding.observedFacts.flatMap((f) => [f.statement, f.sourceRef]),
+      ...OUTPUT.grounding.inferences.flatMap((i) => [i.statement, i.confidence]),
+    ];
+    const unrendered = rendered.filter((value) => !body.includes(value));
+    expect(unrendered, `values missing from the brief: ${unrendered.join(" | ")}`).toEqual([]);
   });
 });

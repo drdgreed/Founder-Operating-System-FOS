@@ -145,6 +145,43 @@ const inferenceSchema = z.object({
   confidence: z.enum(CALL_PREPARATION_CONFIDENCE_VALUES),
 });
 
+/**
+ * F-Y, and the reason this output is GROUPED rather than flat.
+ *
+ * The flat shape had 7 array fields at the top level, five of them bare
+ * `array<string>`, and the model intermittently emitted them as XML-ish
+ * STRINGS — `"criticalUnknowns": "\n<item>...</item>\n<item>...</item>"` —
+ * while dropping other required fields. Not truncation (596-1690 output tokens
+ * against a 4096 ceiling) and not a bad JSON Schema (`zodToJsonSchema` emits
+ * `{"type":"array","items":{"type":"string"}}` correctly). Once the `<item>`
+ * pattern starts in a run of adjacent array fields, it continues.
+ *
+ * MEASURED, not reasoned. A direct 5-call-per-arm probe against
+ * `claude-sonnet-5`, with the F-Y prompt mitigation in `prompt.ts` REMOVED so
+ * the schema's own contribution is visible (with it in place the live failure
+ * rate is ~5.7%, which 5 samples cannot distinguish from zero), using the five
+ * non-injection `call_preparation` fixtures as inputs:
+ *
+ *   flat shape (7 top-level arrays)     3/5 parsed cleanly
+ *   grouped shape (0 top-level arrays)  5/5 parsed cleanly
+ *
+ * Both flat failures were the exact F-Y signature (`criticalUnknowns`,
+ * `topQuestions`, `likelyObjections`, `permittedClaims` arriving as strings,
+ * and `topQuestions` missing entirely). n=5 per arm is small — this is
+ * directional evidence that the grouping helps, not a rate measurement.
+ *
+ * The prompt mitigation STAYS: these are independent defenses, and the
+ * mitigation covers every other agent.
+ *
+ * REJECTED ALTERNATIVE — collapsing the three narrative arrays into one
+ * discriminated array (`[{kind: "question" | "objection" | "unknown", text}]`).
+ * It would cut array count further, but the compliance VOICE of those three
+ * groups differs (`topQuestions` is own_voice; the other two are
+ * reports_input), so the floor policy would become a function of a
+ * model-chosen `kind` — a model could label an assertion an "objection" and
+ * win the softer floor. Voice must be structural, so the groups stay
+ * separately typed.
+ */
 export const callPreparationOutputSchema = z.object({
   meetingObjective: z.string().min(1),
   /** Spec §8.2: "three-sentence summary" — documented expectation, not
@@ -152,21 +189,34 @@ export const callPreparationOutputSchema = z.object({
    * runtime's convention of enforcing shape, not prose length, in Zod). */
   summary: z.string().min(1),
   recommendedClose: z.string().min(1),
-  criticalUnknowns: z.array(z.string()),
-  topQuestions: z.array(z.string()),
-  likelyObjections: z.array(z.string()),
-  /** Claims the founder is permitted to reference on this call, drawn from
-   * `availableClaims`. The critical field for the semantic compliance review:
-   * a prohibited guarantee smuggled in here (rather than a narrative field)
-   * must still be blocked — see `complianceReviewText` below. */
-  permittedClaims: z.array(z.string()),
-  claimsToAvoid: z.array(z.string()),
-  /** D4: every entry MUST carry a sourceRef — an inference can never be
-   * placed here because it lacks one. */
-  observedFacts: z.array(observedFactSchema),
-  /** D4: inferences are LABELED with a confidence and structurally kept out
-   * of `observedFacts` — the type itself forbids inference-as-fact. */
-  inferences: z.array(inferenceSchema),
+  /** The three narrative list fields the founder works from on the call. */
+  callPlan: z.object({
+    criticalUnknowns: z.array(z.string()),
+    topQuestions: z.array(z.string()),
+    likelyObjections: z.array(z.string()),
+  }),
+  /**
+   * The two claims fields stay SEPARATE, distinguishable fields with their
+   * original names — they carry opposite voice tags and opposite meanings, and
+   * merging them would be the one restructure this agent must not make (see
+   * the `complianceReviewText` note below).
+   */
+  claims: z.object({
+    /** Claims the founder is permitted to reference on this call, drawn from
+     * `availableClaims`. The critical field for the semantic compliance review:
+     * a prohibited guarantee smuggled in here (rather than a narrative field)
+     * must still be blocked — see `complianceReviewText` below. */
+    permittedClaims: z.array(z.string()),
+    claimsToAvoid: z.array(z.string()),
+  }),
+  grounding: z.object({
+    /** D4: every entry MUST carry a sourceRef — an inference can never be
+     * placed here because it lacks one. */
+    observedFacts: z.array(observedFactSchema),
+    /** D4: inferences are LABELED with a confidence and structurally kept out
+     * of `observedFacts` — the type itself forbids inference-as-fact. */
+    inferences: z.array(inferenceSchema),
+  }),
 });
 
 export type CallPreparationOutput = z.infer<typeof callPreparationOutputSchema>;
@@ -236,11 +286,11 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
    * different agent, and the fix had lived in one definition since #127.
    */
   promptVocabularies: (input) => [
-    { field: "observedFacts[].sourceRef", allowed: selectCitableSourceRefs(input) },
+    { field: "grounding.observedFacts[].sourceRef", allowed: selectCitableSourceRefs(input) },
     // Not gate-enforced (a gate cannot verify a claim is APPROVED, only that it
     // came from this set) — the stage-7b review is the safety net. Surfacing it
     // still stops the model inventing claims the founder may not make.
-    { field: "permittedClaims", allowed: input.availableClaims },
+    { field: "claims.permittedClaims", allowed: input.availableClaims },
   ],
   deterministicGates: [
     featureModeAllowedGate({
@@ -249,7 +299,7 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
     }),
     factsResolveToSourcesGate<CallPreparationInput, CallPreparationOutput>({
       key: "fos.call_preparation.facts-resolve-to-sources",
-      selectObservedFacts: (output) => output.observedFacts,
+      selectObservedFacts: (output) => output.grounding.observedFacts,
       selectValidSourceRefs: selectCitableSourceRefs,
     }),
     // No recommended-pathway gate here (spec §8.2/issue #60): call
@@ -283,23 +333,31 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
   // floor looks for. A field that must name the forbidden thing cannot be
   // finally blocked for naming it — that is F-K exactly, and it is structural
   // here rather than incidental.
+  //
+  // F-Y GROUPING NOTE: the field NAMES are now dotted paths, because
+  // `FOS1-PROP-02` requires every tagged name to resolve against the output
+  // schema. Both claims paths still END in their original names
+  // ("...permittedClaims" / "...claimsToAvoid"), which is what the tier-2
+  // classifier's field-provenance rule keys on ("field names ending in or
+  // meaning 'claims to avoid'"). The classifier corpus rows still use the bare
+  // "claimsToAvoid" spelling — the same rule matches both.
   complianceReviewText: (output) => [
     { text: output.meetingObjective, field: "meetingObjective", voice: "own_voice" as const },
 
     { text: output.recommendedClose, field: "recommendedClose", voice: "own_voice" as const },
-    ...output.topQuestions.map((text) => ({
+    ...output.callPlan.topQuestions.map((text) => ({
       text,
-      field: "topQuestions",
+      field: "callPlan.topQuestions",
       voice: "own_voice" as const,
     })),
-    ...output.permittedClaims.map((text) => ({
+    ...output.claims.permittedClaims.map((text) => ({
       text,
-      field: "permittedClaims",
+      field: "claims.permittedClaims",
       voice: "own_voice" as const,
     })),
-    ...output.inferences.map((i) => ({
+    ...output.grounding.inferences.map((i) => ({
       text: i.statement,
-      field: "inferences",
+      field: "grounding.inferences",
       voice: "own_voice" as const,
     })),
     // NOT own_voice, corrected after live run 11 floored it on both injection
@@ -310,24 +368,24 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
     // wrong, because enrollment_brief summarises an APPLICATION while this
     // summarises a CONVERSATION whose content is the untrusted part.
     { text: output.summary, field: "summary", voice: "reports_input" as const },
-    ...output.criticalUnknowns.map((text) => ({
+    ...output.callPlan.criticalUnknowns.map((text) => ({
       text,
-      field: "criticalUnknowns",
+      field: "callPlan.criticalUnknowns",
       voice: "reports_input" as const,
     })),
-    ...output.likelyObjections.map((text) => ({
+    ...output.callPlan.likelyObjections.map((text) => ({
       text,
-      field: "likelyObjections",
+      field: "callPlan.likelyObjections",
       voice: "reports_input" as const,
     })),
-    ...output.claimsToAvoid.map((text) => ({
+    ...output.claims.claimsToAvoid.map((text) => ({
       text,
-      field: "claimsToAvoid",
+      field: "claims.claimsToAvoid",
       voice: "reports_input" as const,
     })),
-    ...output.observedFacts.map((f) => ({
+    ...output.grounding.observedFacts.map((f) => ({
       text: f.statement,
-      field: "observedFacts",
+      field: "grounding.observedFacts",
       voice: "reports_input" as const,
     })),
   ],
@@ -349,35 +407,37 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
         output.summary,
         "",
         "## Critical unknowns",
-        ...(output.criticalUnknowns.length
-          ? output.criticalUnknowns.map((u) => `- ${u}`)
+        ...(output.callPlan.criticalUnknowns.length
+          ? output.callPlan.criticalUnknowns.map((u) => `- ${u}`)
           : ["- none noted"]),
         "",
         "## Top questions",
-        ...(output.topQuestions.length
-          ? output.topQuestions.map((q) => `- ${q}`)
+        ...(output.callPlan.topQuestions.length
+          ? output.callPlan.topQuestions.map((q) => `- ${q}`)
           : ["- none noted"]),
         "",
         "## Likely objections",
-        ...(output.likelyObjections.length
-          ? output.likelyObjections.map((o) => `- ${o}`)
+        ...(output.callPlan.likelyObjections.length
+          ? output.callPlan.likelyObjections.map((o) => `- ${o}`)
           : ["- none noted"]),
         "",
         "## Permitted claims",
-        ...(output.permittedClaims.length
-          ? output.permittedClaims.map((c) => `- ${c}`)
+        ...(output.claims.permittedClaims.length
+          ? output.claims.permittedClaims.map((c) => `- ${c}`)
           : ["- none noted"]),
         "",
         "## Claims to avoid",
-        ...(output.claimsToAvoid.length
-          ? output.claimsToAvoid.map((c) => `- ${c}`)
+        ...(output.claims.claimsToAvoid.length
+          ? output.claims.claimsToAvoid.map((c) => `- ${c}`)
           : ["- none noted"]),
         "",
         "## Observed facts",
-        ...output.observedFacts.map((f) => `- ${f.statement} _(source: ${f.sourceRef})_`),
+        ...output.grounding.observedFacts.map((f) => `- ${f.statement} _(source: ${f.sourceRef})_`),
         "",
         "## Inferences (labeled, not facts)",
-        ...output.inferences.map((i) => `- ${i.statement} _(confidence: ${i.confidence})_`),
+        ...output.grounding.inferences.map(
+          (i) => `- ${i.statement} _(confidence: ${i.confidence})_`,
+        ),
         "",
         "## Recommended close",
         output.recommendedClose,
@@ -385,8 +445,8 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
     buildClaimsManifest: (_input, output) => ({
       // Internal evidence-audit aid: every sourceRef this brief actually
       // cited, so a reviewer can spot-check grounding without re-deriving it.
-      observedFactSourceRefs: output.observedFacts.map((f) => f.sourceRef),
-      permittedClaims: output.permittedClaims,
+      observedFactSourceRefs: output.grounding.observedFacts.map((f) => f.sourceRef),
+      permittedClaims: output.claims.permittedClaims,
     }),
   },
   // Stage 9b: NO domain record is written (spec §7.1 gives Call Preparation

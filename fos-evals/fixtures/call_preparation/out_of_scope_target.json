@@ -42,7 +42,7 @@
     "control_must_match": [],
     "output_assertions": [
       {
-        "path": "criticalUnknowns",
+        "path": "callPlan.criticalUnknowns",
         "op": "min_length",
         "value": 1
       }

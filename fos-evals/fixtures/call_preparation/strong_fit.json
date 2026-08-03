@@ -59,7 +59,7 @@
     "control_must_match": [],
     "output_assertions": [
       {
-        "path": "observedFacts",
+        "path": "grounding.observedFacts",
         "op": "min_length",
         "value": 1
       }
