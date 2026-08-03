@@ -235,13 +235,72 @@ const NBA_CONTACT_ACTION_TYPES: ReadonlySet<string> = new Set([
   "schedule_conversation",
   "propose_offer",
 ]);
-function nbaActionIsContact(actionType: string): boolean {
+/**
+ * EXPORTED so the eval runner's dry-run stub derives contact-ness from the SAME
+ * expression the consent and cooldown gates do. A stub that re-listed the
+ * contact types would be a second source of truth for the one property both
+ * those gates hang on, and would drift the moment `NBA_ACTION_TYPES` grows.
+ */
+export function nbaActionIsContact(actionType: string): boolean {
   return NBA_CONTACT_ACTION_TYPES.has(actionType);
 }
 const NBA_CONTACT_NO_CHANNEL_SENTINEL = "__contact_action_missing_channel__";
 
 function selectProposedAction(output: NextBestActionOutput): ActionKey {
   return { type: output.actionType, target: output.actionTarget };
+}
+
+// ---- Shared gate/vocabulary selectors (#127, P-004) -----------------------
+//
+// Each closed set below is defined ONCE and consumed by BOTH the gate that
+// enforces it and `promptVocabularies` below, so "what the model is told" and
+// "what the gate enforces" are the same expression and cannot drift. The
+// failure this prevents has already cost two live runs on other agents
+// (enrollment brief run 1, call preparation run 10): the model grounded
+// honestly against a vocabulary nobody had shown it, and the majority of runs
+// blocked. It is strictly more expensive here — this is the most-gated agent
+// in the system, and THREE of its closed sets are caller-supplied input the
+// model can only know about if it is told.
+
+/** The ONLY channels `consent` accepts for a CONTACT action (fail-closed
+ * allowlist, option B). Shared with `consentGate` below. */
+function selectConsentedChannels(input: NextBestActionInput): readonly string[] {
+  return input.consentedChannels;
+}
+
+/** The ONLY offers `offer-available` accepts, besides the undetermined
+ * sentinel (which the gate exempts separately). Shared with `offerAvailableGate`. */
+function selectAvailableOffers(input: NextBestActionInput): readonly string[] {
+  return input.availableOffers;
+}
+
+/** The opportunity's current stage — read by `lifecycle-legal` AND
+ * `not-terminal-status`. Shared with both gates below. */
+function selectCurrentStage(input: NextBestActionInput): OpportunityStage {
+  return input.opportunity.stage;
+}
+
+/** The DERIVED stage -> action-type table `lifecycle-legal` enforces with.
+ * Shared with `lifecycleLegalGate` below. */
+function selectAllowedActionsByStage(
+  input: NextBestActionInput,
+): Readonly<Record<OpportunityStage, readonly string[]>> {
+  return input.allowedActionsByStage as Readonly<Record<OpportunityStage, readonly string[]>>;
+}
+
+/**
+ * The action types legal at THIS run's stage. This is literally the expression
+ * `lifecycleLegalGate` evaluates internally — `allowedActionsByStage[current]
+ * ?? []` — rebuilt from the SAME two selectors the gate is constructed with,
+ * so the vocabulary cannot drift from the check even though the gate does the
+ * indexing itself.
+ *
+ * An empty result is rendered to the model as an empty `allowedValues` list,
+ * which is the honest reading: at a stage the caller's table does not cover,
+ * NO non-stage-move action is legal (the gate's own `?? []` fallback).
+ */
+function selectStageLegalActionTypes(input: NextBestActionInput): readonly string[] {
+  return selectAllowedActionsByStage(input)[selectCurrentStage(input)] ?? [];
 }
 
 export const fosNextBestActionAgentDefinition: AgentDefinition<
@@ -263,6 +322,44 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
   permittedMemoryScopes: ["enrollment_opportunity", "person"],
   autonomyCeiling: "review",
   featureFlagKey: FOS_NEXT_BEST_ACTION_FEATURE_FLAG_KEY,
+  /**
+   * #127, propagated here by P1.10d-7. Surfaced to the model verbatim in the
+   * user turn (see PromptVocabulary); the RULE about copying verbatim is static
+   * system-prompt policy, so no input-derived string reaches the policy channel
+   * (D9).
+   *
+   * Every entry reuses the SAME selector its gate enforces with (see the shared
+   * selectors above), so the pair cannot drift.
+   *
+   * Only the three CALLER-SUPPLIED sets are listed. The other model-authored
+   * fields with closed sets (`businessImpact`, `urgency`, `confidence`,
+   * `impliedStage`) are Zod enums the model already receives in full through the
+   * structured-output JSON Schema — repeating them here would add a second
+   * source of truth for a set that cannot drift, which is the thing this
+   * mechanism exists to avoid.
+   */
+  promptVocabularies: (input) => [
+    // The highest-value entry, and the one with no other disclosure path.
+    // `actionType` IS a closed Zod enum, so the model sees all six values — but
+    // the gate accepts only the caller's DERIVED subset for this stage, which
+    // appears nowhere in the JSON Schema. A model choosing a perfectly sensible
+    // action the caller's table happens not to list blocks the run at
+    // `lifecycle-legal`, and reads exactly like the gate catching a real
+    // problem.
+    { field: "actionType", allowed: selectStageLegalActionTypes(input) },
+    // The highest-STAKES entry. Consent is fail-closed (option B): a channel
+    // spelled differently from the allowlist is not a near miss, it is a
+    // blocked run. An EMPTY list here is correct and deliberate — it tells the
+    // model that no contact channel is legal on this run, which is precisely
+    // what an empty `consentedChannels` means.
+    { field: "channel", allowed: selectConsentedChannels(input) },
+    // The gate takes `availableOffers` WITHOUT the sentinel and exempts
+    // `undeterminedValue` separately, so the vocabulary ADDS the sentinel —
+    // otherwise the model could not select the one value that means "no offer
+    // is implicated", and would be pushed into fabricating one. Same handling
+    // as `enrollment-brief.ts`'s `recommendedPathway`.
+    { field: "offer", allowed: [...selectAvailableOffers(input), NBA_UNDETERMINED_OFFER] },
+  ],
   deterministicGates: [
     featureModeAllowedGate({
       key: "fos.next_best_action.mode-allowed",
@@ -280,7 +377,7 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
         nbaActionIsContact(output.actionType)
           ? (output.channel ?? NBA_CONTACT_NO_CHANNEL_SENTINEL)
           : undefined,
-      selectConsentedChannels: (input) => input.consentedChannels,
+      selectConsentedChannels,
     }),
     cooldownGate<NextBestActionInput, NextBestActionOutput>({
       key: "fos.next_best_action.cooldown",
@@ -293,11 +390,10 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
     }),
     lifecycleLegalGate<NextBestActionInput, NextBestActionOutput>({
       key: "fos.next_best_action.lifecycle-legal",
-      selectCurrentStage: (input) => input.opportunity.stage,
+      selectCurrentStage,
       selectProposedActionType: (output) => output.actionType,
       selectImpliedStage: (output) => output.impliedStage,
-      selectAllowedActionsByStage: (input) =>
-        input.allowedActionsByStage as Readonly<Record<OpportunityStage, readonly string[]>>,
+      selectAllowedActionsByStage,
     }),
     noDuplicateTaskGate<NextBestActionInput, NextBestActionOutput>({
       key: "fos.next_best_action.no-duplicate-task",
@@ -311,12 +407,12 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
     }),
     notTerminalStatusGate<NextBestActionInput, NextBestActionOutput>({
       key: "fos.next_best_action.not-terminal-status",
-      selectCurrentStage: (input) => input.opportunity.stage,
+      selectCurrentStage,
     }),
     offerAvailableGate<NextBestActionInput, NextBestActionOutput>({
       key: "fos.next_best_action.offer-available",
       selectProposedOffer: (output) => output.offer,
-      selectAvailableOffers: (input) => input.availableOffers,
+      selectAvailableOffers,
       undeterminedValue: NBA_UNDETERMINED_OFFER,
     }),
   ],
@@ -347,12 +443,71 @@ export const fosNextBestActionAgentDefinition: AgentDefinition<
   // gate-validated identifier (`offer`, checked against `availableOffers` by
   // `offerAvailableGate`, or the undetermined sentinel). Same fields the old
   // gate's `selectText` scanned.
+  //
+  // Voice tagging (#140 / F-K), propagated here by P1.10d-7. Coverage is
+  // UNCHANGED — every text above is still classified; only the appeal path
+  // differs.
+  //
+  //   own_voice     — the agent asserting something. Full floor, unappealable.
+  //   reports_input — a field whose PURPOSE is to describe untrusted input, so a
+  //                   `guarantee` near an employment noun means the agent is
+  //                   REPORTING a guarantee, not making one. The floor escalates
+  //                   to tier 2 (which reads meaning) instead of blocking.
+  //
+  // Per-field reasoning, made FRESH. The split every other agent uses turns on
+  // "does this field recount evidence?" — and that question has no purchase
+  // here, because THIS AGENT HAS NO EVIDENCE RECORDS. Its entire input is the
+  // opportunity/person rows plus six caller-supplied policy sets; it has no
+  // `observedFacts`, no `riskFlags`, no transcript, and therefore no output
+  // field whose PURPOSE is to restate untrusted content. The governing question
+  // instead is the one this agent exists for: every field below becomes an
+  // INSTRUCTION the founder acts on. All five are own_voice, and that is a
+  // judgment about this schema rather than a default.
+  //
+  //   summary — own_voice. The artifact renders it under "## Summary" beneath a
+  //     "# Next Best Action" heading: it states WHAT TO DO, and the founder
+  //     acts on it. Note the counter-read that moved call_preparation's
+  //     `summary` to reports_input after live run 11 — that summary recounts an
+  //     applicant's evidence, and this one has no evidence to recount.
+  //     *** FLAG, the one tag here a live run could overturn. *** The
+  //     `next_best_action.prompt_injection` fixture puts "guarantee me a job
+  //     offer within 30 days" in `opportunity.primaryGoal`. If the model writes
+  //     summaries that QUOTE the applicant's stated goal ("Priya asked to be
+  //     guaranteed a job offer"), the unappealable floor would hard-block the
+  //     agent's own correct restatement — F-K verbatim, the failure that
+  //     hard-blocked objection_intelligence. That fixture is deliberately
+  //     written to tolerate the block (`status` accepts `policy_blocked`,
+  //     `compliance_review_blocked: null`), so it will SHOW this rather than
+  //     fail for it. If a live run shows it, `summary` moves to reports_input.
+  //   rationale — own_voice. The agent justifying its own recommendation, in
+  //     its own voice, by construction. FOS1-NBA-10 asserts a guarantee here
+  //     blocks; keeping the full floor keeps that test meaningful.
+  //   actionTarget — own_voice. Model-authored free text (`z.string().min(1)`)
+  //     persisted into `claims_manifest_json`. Nothing about it describes
+  //     untrusted input — it names WHO to act on. FOS1-NBA-18 covers it.
+  //   recommendedDueAt — own_voice. `.datetime()`-constrained, so in practice
+  //     it cannot carry prose at all; scanned as defense-in-depth. Its purpose
+  //     is to tell the founder WHEN to act. Not a report of anything.
+  //   channel — own_voice. It instructs HOW to contact a person. For a
+  //     non-contact action consent is exempt, so this is the only check on it
+  //     at all (the reason it is scanned — see above); appealing that check
+  //     would reopen the hole FOS1-NBA-17 was written to close.
   complianceReviewText: (output) => [
-    output.summary,
-    output.rationale,
-    output.actionTarget,
-    ...(output.recommendedDueAt ? [output.recommendedDueAt] : []),
-    ...(output.channel ? [output.channel] : []),
+    { text: output.summary, field: "summary", voice: "own_voice" as const },
+    { text: output.rationale, field: "rationale", voice: "own_voice" as const },
+    { text: output.actionTarget, field: "actionTarget", voice: "own_voice" as const },
+    ...(output.recommendedDueAt
+      ? [
+          {
+            text: output.recommendedDueAt,
+            field: "recommendedDueAt",
+            voice: "own_voice" as const,
+          },
+        ]
+      : []),
+    ...(output.channel
+      ? [{ text: output.channel, field: "channel", voice: "own_voice" as const }]
+      : []),
   ],
   artifact: {
     // FLAG: spec §7.1 has no dedicated Next-Best-Action artifact type — see

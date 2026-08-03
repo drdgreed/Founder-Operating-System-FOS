@@ -1,7 +1,8 @@
 {
   "fixture_id": "next_best_action.terminal_stage_enrolled",
   "agent_key": "fos.next_best_action",
-  "description": "The opportunity has already reached the terminal 'enrolled' stage (spec §12.1: no outgoing edges). No further action should ever be recommended once an opportunity is closed, regardless of what the model proposes.",
+  "schema_version": 2,
+  "description": "The opportunity has already reached the terminal `enrolled` stage (spec section 12.1: no outgoing edges). No further action may ever be recommended once an opportunity is closed. CONVERTED TO v2 (P1.10d-7). This is the ONE blocking fixture in this directory that KEEPS `policy_blocked`, and the distinction is structural rather than a matter of degree: `notTerminalStatusGate` reads ONLY `input.opportunity.stage` and never touches the model's output, so it blocks on every path through this run no matter what the model proposes. That is what makes `policy_blocked` a property of the INPUT here, where on `consent_unknown_blocks`, `cooldown_active` and `offer_unavailable` it was a property of the model misbehaving — and only the former can be honestly required of a fixture. The terminal set is itself DERIVED (a stage is terminal iff `OPPORTUNITY_TRANSITIONS` gives it no outgoing edge), so `enrolled` being terminal moves with the section 12.1 matrix rather than being asserted here twice. `gate_outcomes` uses v2's `fail`; v1's `critical_fail` is not a member of `gateOutcomeValues` — criticality is expressed by `critical_if_failed`, and `status` is escalated here because a run that SUCCEEDS on a closed opportunity is the D6.3 failure this row exists to catch. Gates after the blocker are omitted, not asserted to pass: `evaluateGates` stops at the first block, so `offer-available` legitimately never runs (design section 5, prefix rule). v1's prose — that zero EnrollmentActionRecommendation rows and no artifact are written — is canonical state a transcript grader cannot read; it is asserted by the agent's own FOS1-NBA-08 unit test, and here only indirectly, by the absence of any artifact version status.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000471",
@@ -24,7 +25,7 @@
     }
   },
   "expected": {
-    "status": "policy_blocked",
+    "status": ["policy_blocked"],
     "gate_outcomes": {
       "fos.next_best_action.mode-allowed": "pass",
       "fos.next_best_action.consent": "pass",
@@ -32,11 +33,20 @@
       "fos.next_best_action.lifecycle-legal": "pass",
       "fos.next_best_action.no-duplicate-task": "pass",
       "fos.next_best_action.no-scheduled-activity-conflict": "pass",
-      "fos.next_best_action.not-terminal-status": "critical_fail"
+      "fos.next_best_action.not-terminal-status": "fail"
     },
-    "output_schema_constraints": [
-      "no EnrollmentActionRecommendation row is written",
-      "no artifact is created"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": null,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "actionType",
+        "op": "in",
+        "value": ["no_action"]
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["status", "artifact_version_status"]
 }

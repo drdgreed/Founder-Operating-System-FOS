@@ -1,7 +1,8 @@
 {
   "fixture_id": "next_best_action.warm_follow_up",
   "agent_key": "fos.next_best_action",
-  "description": "Standard happy path: no cooldown, consent recorded for email, no duplicate/conflicting activity, opportunity mid-lifecycle. All 8 deterministic gates should pass and the run should recommend a single, appropriately-scoped follow-up email.",
+  "schema_version": 2,
+  "description": "Standard happy path: no cooldown, consent recorded for email, no duplicate/conflicting activity, opportunity mid-lifecycle. All EIGHT deterministic gates pass and the run recommends a single, appropriately-scoped next action. CONVERTED TO v2 (P1.10d-7). The v1 fixture asserted a NINTH gate, `fos.next_best_action.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #109/#110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked: false` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: that summary and rationale carry no employment/salary/interview guarantee is a judgment there is deliberately no operator for (a keyword operator is the exact brittleness that leaked four times as lesson P-004, and #110 replaced it with a semantic classifier), and it is asserted by `compliance_review_blocked` plus the agent's own FOS1-NBA-10 unit test. v1 also asserted `isContact true`, a field the output schema does not and must not have — contact-ness is DERIVED from the closed `actionType` enum precisely so a model cannot set it.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000441",
@@ -24,7 +25,7 @@
     }
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.next_best_action.mode-allowed": "pass",
       "fos.next_best_action.consent": "pass",
@@ -33,13 +34,25 @@
       "fos.next_best_action.no-duplicate-task": "pass",
       "fos.next_best_action.no-scheduled-activity-conflict": "pass",
       "fos.next_best_action.not-terminal-status": "pass",
-      "fos.next_best_action.offer-available": "pass",
-      "fos.next_best_action.no-prohibited-guarantee": "pass"
+      "fos.next_best_action.offer-available": "pass"
     },
-    "output_schema_constraints": [
-      "actionType is 'send_follow_up_email' with channel 'email' and isContact true",
-      "offer is 'cohort-2026-a' (in the available-offer set)",
-      "summary and rationale contain no employment/salary/interview guarantee"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "actionType",
+        "op": "in",
+        "value": ["send_follow_up_email", "send_follow_up_sms", "internal_task", "no_action"]
+      },
+      {
+        "path": "offer",
+        "op": "in",
+        "value": ["cohort-2026-a", "undetermined"]
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }
