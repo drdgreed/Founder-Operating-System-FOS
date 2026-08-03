@@ -225,7 +225,7 @@ export interface RunEvalSuiteOptions {
  * them separately would force the registry to be generic in the seeded row
  * type, which every heterogeneous entry would then have to widen away.
  */
-interface EvalAgentSetup {
+export interface EvalAgentSetup {
   /** Directory under `fos-evals/fixtures/`. */
   fixtureDir: string;
   definition: Parameters<typeof runAgent>[1];
@@ -256,7 +256,7 @@ interface EvalAgentSetup {
   stubOutput(input: Record<string, unknown>): unknown;
 }
 
-const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
+export const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
   [FOS_ENROLLMENT_BRIEF_AGENT_KEY]: {
     fixtureDir: "enrollment_brief",
     definition: fosEnrollmentBriefAgentDefinition,
