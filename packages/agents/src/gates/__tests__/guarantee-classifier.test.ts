@@ -685,3 +685,68 @@ describe("P1.10k: an ANCHORED floor match is final regardless of field policy", 
     expect(tier1FloorMatch("prepared for interviews")).toBeNull();
   });
 });
+
+describe("F-AB: a FIRST-PERSON assertion is final, whatever field it arrives from", () => {
+  // The recall failure that opened this: "We guarantee you'll land a senior
+  // data analyst role" was ALLOWED from `claimsToAvoid`, because that field is
+  // reports_input and a proximity match defers there. The anchored arms missed
+  // it — they need the article immediately before the noun, and three
+  // adjectives drop it out.
+  //
+  // The signal is the SUBJECT. "we guarantee" is the programme speaking;
+  // "the programme guarantees" is someone REPORTING about it; "Guaranteeing …"
+  // names an act with no speaker. Matching first person ONLY is what separates
+  // them — an earlier draft included "the programme" and broke attribution.
+  it.each([
+    ["We guarantee you'll land a senior data analyst role within 3 months", true],
+    ["We guarantee you a job in 90 days.", true],
+    ["Our program guarantees an interview with a hiring partner.", true],
+    ["We guarantee employment on completion.", true],
+  ])("FOS1-GCLS-fp1-01: %s is FINAL", (text, anchored) => {
+    expect(tier1FloorMatch(text)?.anchored).toBe(anchored);
+  });
+
+  it("FOS1-GCLS-fp1-02: the NAMING form still defers, so F-K survives", () => {
+    // One gerund apart from the row above, and it must land on the other side.
+    for (const text of [
+      "Guaranteeing Ada will land a Senior Data Analyst role within 3 months",
+      "Guaranteeing a job, employment, or interview after program completion",
+    ]) {
+      expect(tier1FloorMatch(text)?.anchored, text).toBe(false);
+    }
+  });
+
+  it("FOS1-GCLS-fp1-03: ATTRIBUTION is not first person, so it defers", () => {
+    // "the programme guarantees" is a report ABOUT the programme. Including
+    // that phrasing in the subject set broke this case in an earlier draft, and
+    // it is why the pattern is first-person only.
+    const m = tier1FloorMatch(
+      "The applicant asked whether the programme guarantees job placement.",
+    );
+    expect(m?.anchored).toBe(false);
+  });
+
+  it("FOS1-GCLS-fp1-04: a first-person DENIAL is not a promise — F-P survives", () => {
+    // The arm is final but NOT negation-immune: it is evaluated inside the
+    // clause loop, which skips a denying clause. "We cannot guarantee an
+    // employment outcome" is the safest sentence the programme can write, and
+    // blocking it is the inversion F-P was built to remove.
+    expect(tier1FloorMatch("We cannot guarantee an employment outcome.")).toBeNull();
+    expect(tier1FloorMatch("We guarantee coaching quality, not a job.")).toBeNull();
+  });
+
+  it("FOS1-GCLS-fp1-05: it is FINAL even from a reports_input field", async () => {
+    const model: ModelClient = {
+      generateStructured: async () => {
+        throw new Error("tier 2 must never be reached — a first-person promise is final");
+      },
+    };
+    const decision = await evaluateGuaranteeText(
+      "We guarantee you'll land a senior data analyst role within 3 months",
+      { model },
+      { floorIsFinal: false, field: "claims.claimsToAvoid" },
+    );
+    expect(decision.tier).toBe("tier1-floor");
+    expect(decision.verdict).toBe("block");
+  });
+});

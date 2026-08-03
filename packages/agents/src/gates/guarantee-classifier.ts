@@ -259,6 +259,38 @@ const TIER1_ANCHORED_PATTERNS: RegExp[] = [
  * guarantee. The floor is explicitly incomplete by design; this is one more
  * documented gap in it, taken to stop it inverting on careful writing.
  */
+/**
+ * A FIRST-PERSON assertion of a guarantee near an employment noun (F-AB).
+ *
+ * The third category, and it exists because the other two could not separate
+ * two texts that live run 13 produced from the SAME field:
+ *
+ *   "We guarantee you'll land a senior data analyst role"      <- a PROMISE
+ *   "Guaranteeing Ada will land a Senior Data Analyst role"    <- NAMING it
+ *
+ * Both arrive from `claimsToAvoid`, which is `reports_input`, so proximity
+ * defers and the promise was ALLOWED — a recall failure. The anchored arms miss
+ * it because they require the article immediately before the noun, and three
+ * adjectives drop it out. Widening the article WAS tried and reverted: it
+ * anchored the naming form too, since the two differ only by a leading gerund.
+ *
+ * The signal is the SUBJECT, not the verb. "we guarantee" is the programme
+ * speaking; "the programme guarantees" is someone REPORTING about it, and
+ * "Guaranteeing ..." names an act with no speaker at all. So this deliberately
+ * matches first person ONLY — including `the programme` would break the
+ * attribution case, which is how the first draft of this failed.
+ *
+ * FINAL regardless of field policy, but NOT negation-immune: it is evaluated
+ * inside the clause loop below, which already skips a denying clause. That
+ * matters — "We cannot guarantee an employment outcome" is the safest sentence
+ * the programme can write, and F-P exists to protect it.
+ */
+const FIRST_PERSON_SUBJECT = "(?:we|our\\s+program(?:me)?s?)";
+const TIER1_FIRST_PERSON_PATTERN = new RegExp(
+  `\\b${FIRST_PERSON_SUBJECT}\\b[^.!?]{0,20}\\b${GUARANTEE_VERB}\\b[^.!?]{0,60}\\b${FLOOR_SUBJECT}\\b`,
+  "i",
+);
+
 const TIER1_PROXIMITY_PATTERNS: RegExp[] = [
   new RegExp(`\\b${GUARANTEE_VERB}\\b[^.!?]{0,40}\\b${FLOOR_SUBJECT}\\b`, "i"),
   new RegExp(`\\b${FLOOR_SUBJECT}\\b[^.!?]{0,40}\\b${GUARANTEE_VERB}\\b`, "i"),
@@ -304,6 +336,11 @@ export function tier1FloorMatch(text: string): Tier1FloorMatch | null {
   // falls through to tier 2 rather than being hard-blocked here (F-P).
   for (const clause of normalized.split(CLAUSE_SPLIT_RE)) {
     if (NEGATION_RE.test(clause)) continue;
+    // A first-person assertion is FINAL — the programme itself promising an
+    // outcome has no innocent reading, whatever field it arrives from.
+    if (TIER1_FIRST_PERSON_PATTERN.test(clause)) {
+      return { decision: block(), anchored: true };
+    }
     for (const pattern of TIER1_PROXIMITY_PATTERNS) {
       if (pattern.test(clause)) return { decision: block(), anchored: false };
     }
