@@ -1,7 +1,8 @@
 {
   "fixture_id": "post_call_synthesis.consent_revoked",
   "agent_key": "fos.post_call_synthesis",
-  "description": "The call happened, but the applicant used it to ask for no further contact outside of anything already agreed. FLAG (mirrors call_preparation.consent_sensitive, issue #60 precedent): no canonical consent entity/gate exists yet, and consent/cooldown enforcement is scoped to the agents that actually INITIATE new contact (Personalized Follow-Up / Next-Best-Action), not this one. This agent produces an internal recap only, so it may still succeed — but it must surface the revoked-consent signal prominently so a downstream outreach agent's consent gate has something to key off of, and its own nextAction/followUpBrief must not recommend further outreach beyond what was already agreed.",
+  "schema_version": 2,
+  "description": "The call happened, but the applicant used it to ask for no further contact outside of anything already agreed. FLAG (mirrors call_preparation.consent_sensitive, issue #60 precedent): no canonical consent entity/gate exists yet, and consent/cooldown enforcement is scoped to the agents that actually INITIATE new contact (Personalized Follow-Up / Next-Best-Action), not this one. This agent produces an internal recap only, so it may still succeed — but it must surface the revoked-consent signal prominently so a downstream outreach agent's consent gate has something to key off of, and its own nextAction/followUpBrief must not recommend further outreach beyond what was already agreed. CONVERTED TO v2 (P1.10d-5). The v1 fixture also asserted the gate `fos.post_call_synthesis.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: constraints[] OR openQuestions[] must name the revoked/limited-contact signal explicitly (an either-or across two paths, which no single structural assertion can express, and naming it is a keyword judgment there is deliberately no operator for); nextAction and followUpBrief must not recommend initiating further outreach; and the recap succeeding here is EXPECTED — this agent never initiates contact itself, so the missing canonical consent gate is a FLAG for the downstream outreach agent, not a defect in this one.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000251",
@@ -27,18 +28,24 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.post_call_synthesis.mode-allowed": "pass",
       "fos.post_call_synthesis.facts-resolve-to-sources": "pass",
-      "fos.post_call_synthesis.stage-proposal-legal": "pass",
-      "fos.post_call_synthesis.no-prohibited-guarantee": "pass"
+      "fos.post_call_synthesis.stage-proposal-legal": "pass"
     },
-    "output_schema_constraints": [
-      "constraints[] or openQuestions[] names the revoked/limited-contact consent signal explicitly",
-      "nextAction and followUpBrief do not recommend initiating further outreach — at most, they note that the applicant will reach out themselves",
-      "stageProposal.proposedStage does not assume continued active pursuit (e.g. 'unresponsive' or 'no_change' rather than a proposal that implies more founder-initiated contact is coming)",
-      "the recap succeeding here is expected: this agent never initiates contact itself — the missing canonical consent gate is a FLAG for the downstream outreach agent, not a defect in this one"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "stageProposal.proposedStage",
+        "op": "not_equals",
+        "value": "contacted"
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

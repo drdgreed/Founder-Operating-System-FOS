@@ -14,6 +14,7 @@ import {
   type FeatureFlagMode,
   interaction,
 } from "@fos/db/schema";
+import type { OpportunityStage } from "@fos/db/services";
 import { NotionClient } from "@fos/notion";
 import type { ComplianceReviewDecision } from "../types.js";
 
@@ -141,11 +142,20 @@ export async function seedEnrollmentBriefFixture(db: EvalDb) {
  * Seed the canonical rows a CONVERSATION-shaped agent reasons over: workspace,
  * product, person, enrollment opportunity, and one `interaction`.
  *
- * Parameterised rather than duplicated because two agents now need exactly this
- * graph and differ only in the interaction's state — `fos.objection_intelligence`
+ * Parameterised rather than duplicated because three agents now need exactly
+ * this graph and differ only in the interaction's state — `fos.objection_intelligence`
  * classifies objections from a call that HAPPENED, `fos.call_preparation`
- * prepares for one that is SCHEDULED. A fixture whose interaction is in the
- * wrong state is a fixture that cannot legitimately produce its own output.
+ * prepares for one that is SCHEDULED, `fos.post_call_synthesis` recaps one that
+ * HAPPENED. A fixture whose interaction is in the wrong state is a fixture that
+ * cannot legitimately produce its own output.
+ *
+ * `opportunityStage` is likewise a parameter, defaulting to the historical
+ * `"reviewing"` so the two existing wrappers are byte-identical. It exists for
+ * `fos.post_call_synthesis`, whose `stage-proposal-legal` gate reads
+ * `input.opportunity.stage` and whose fixtures each declare the stage their
+ * expected proposal is legal FROM. The runner rebinds the fixture's stage onto
+ * the seeded row, so a hardcoded seed stage would silently rewrite what every
+ * one of those fixtures tests.
  *
  * `notes` and `transcriptRef` stay NULL on purpose. They are UNTRUSTED
  * (spec 551) and reach the model only via `evidenceRecords`; seeding content
@@ -158,6 +168,7 @@ export async function seedEnrollmentBriefFixture(db: EvalDb) {
 async function seedConversationFixture(
   db: EvalDb,
   interactionValues: { status: string; occurredAt?: Date; scheduledAt?: Date },
+  opportunityStage: OpportunityStage = "reviewing",
 ) {
   const workspace = await seedEvalWorkspace(db);
 
@@ -194,7 +205,7 @@ async function seedConversationFixture(
       workspaceId: workspace.id,
       productId: prod.id,
       personId: personRow.id,
-      stage: "reviewing",
+      stage: opportunityStage,
       currency: "USD",
       version: 1,
     })
@@ -238,6 +249,19 @@ export function seedCallPreparationFixture(db: EvalDb) {
     status: "scheduled",
     scheduledAt: new Date("2026-02-01T15:00:00Z"),
   });
+}
+
+/**
+ * `fos.post_call_synthesis` recaps a call that HAPPENED — same interaction
+ * state as objection_intelligence, but the opportunity's stage is supplied by
+ * the caller because this agent's `stage-proposal-legal` gate reads it.
+ */
+export function seedPostCallSynthesisFixture(db: EvalDb, opportunityStage: OpportunityStage) {
+  return seedConversationFixture(
+    db,
+    { status: "completed", occurredAt: new Date("2026-01-15T15:00:00Z") },
+    opportunityStage,
+  );
 }
 
 /** Env var the stub Notion client reads its (irrelevant) token from. Set by

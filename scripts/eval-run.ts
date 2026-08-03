@@ -52,8 +52,12 @@ import {
   FOS_ENROLLMENT_BRIEF_AGENT_KEY,
   fosObjectionIntelligenceAgentDefinition,
   fosCallPreparationAgentDefinition,
+  fosPostCallSynthesisAgentDefinition,
   FOS_CALL_PREPARATION_AGENT_KEY,
   FOS_CALL_PREPARATION_FEATURE_FLAG_KEY,
+  FOS_POST_CALL_SYNTHESIS_AGENT_KEY,
+  FOS_POST_CALL_SYNTHESIS_FEATURE_FLAG_KEY,
+  STAGE_PROPOSAL_NO_CHANGE,
   FOS_OBJECTION_INTELLIGENCE_AGENT_KEY,
   FOS_OBJECTION_INTELLIGENCE_FEATURE_FLAG_KEY,
   FOS_ENROLLMENT_BRIEF_FEATURE_FLAG_KEY,
@@ -70,11 +74,13 @@ import {
   seedEnrollmentBriefFixture,
   seedObjectionIntelligenceFixture,
   seedCallPreparationFixture,
+  seedPostCallSynthesisFixture,
   setEvalFeatureFlag,
   createStubNotionClient,
   stubComplianceReviewer,
 } from "../packages/agents/src/testing/eval-harness.js";
 import { agentRun, artifactVersion } from "@fos/db/schema";
+import { OPPORTUNITY_TRANSITIONS, type OpportunityStage } from "@fos/db/services";
 import { eq } from "drizzle-orm";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -178,6 +184,37 @@ const OBJECTION_INTELLIGENCE_STUB_OUTPUT = {
     },
   ],
   summary: "One observed price objection with a cited source, and one inferred time objection.",
+};
+
+/**
+ * Stub payload for `fos.post_call_synthesis`.
+ *
+ * TWO fields are REBOUND per fixture by the registry entry:
+ * `observedFacts[].sourceRef` (to evidence the fixture actually supplies) and
+ * `stageProposal.proposedStage` (to a transition actually legal from the
+ * fixture's own current stage). A hardcoded sourceRef fails
+ * `facts-resolve-to-sources` wherever evidence is spelled differently, and a
+ * hardcoded stage fails `stage-proposal-legal` from any other starting stage —
+ * either would look like a gate catching a real problem, and is the live-run-1
+ * failure shape.
+ */
+const POST_CALL_SYNTHESIS_STUB_OUTPUT = {
+  confirmedGoals: ["Move into a senior analytics role in the next few months."],
+  constraints: ["About ten hours a week is the most the applicant can commit."],
+  objections: ["The programme fee is higher than the applicant had budgeted for."],
+  commitments: ["Applicant will review the syllabus before the next conversation."],
+  openQuestions: ["Is the weekly time commitment workable alongside the current role?"],
+  fitUpdate: {
+    status: "unchanged",
+    rationale: "The call confirmed the stated goal without changing the earlier read.",
+  },
+  stageProposal: { proposedStage: "PLACEHOLDER", rationale: "The conversation has taken place." },
+  nextAction: "Send the syllabus and agree a follow-up date.",
+  followUpBrief:
+    "Recap the goals and constraints the call surfaced, confirm the next step, and note that " +
+    "no decision was asked for yet.",
+  observedFacts: [{ statement: "The call took place as scheduled.", sourceRef: "PLACEHOLDER" }],
+  inferences: [{ statement: "Interest appears steady rather than urgent.", confidence: "medium" }],
 };
 
 export interface RunEvalSuiteOptions {
@@ -349,6 +386,56 @@ const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
     async prepare(db, input) {
       const seeded = await seedCallPreparationFixture(db);
       const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      const person = { ...(input.person as Record<string, unknown>) };
+      const interaction = { ...(input.interaction as Record<string, unknown>) };
+      opportunity.id = seeded.opportunity.id;
+      opportunity.stage = seeded.opportunity.stage;
+      person.id = seeded.person.id;
+      interaction.id = seeded.interaction.id;
+      return {
+        workspaceId: seeded.workspace.id,
+        input: { ...input, opportunity, person, interaction },
+      };
+    },
+  },
+
+  [FOS_POST_CALL_SYNTHESIS_AGENT_KEY]: {
+    fixtureDir: "post_call_synthesis",
+    definition: fosPostCallSynthesisAgentDefinition,
+    featureFlagKey: FOS_POST_CALL_SYNTHESIS_FEATURE_FLAG_KEY,
+    stubOutput: (input) => {
+      const records = (input.evidenceRecords as { sourceRef?: string }[] | undefined) ?? [];
+      const firstRef = records[0]?.sourceRef;
+      // The proposal must be legal FROM THIS FIXTURE'S current stage, read off
+      // the same matrix `stageProposalLegalGate` consults. `no_change` is the
+      // fallback (always legal) for a terminal stage with no outgoing edge —
+      // never a guess that would block.
+      const stage = (input.opportunity as { stage?: string }).stage as OpportunityStage | undefined;
+      const proposedStage =
+        (stage ? OPPORTUNITY_TRANSITIONS[stage]?.[0] : undefined) ?? STAGE_PROPOSAL_NO_CHANGE;
+      return {
+        ...POST_CALL_SYNTHESIS_STUB_OUTPUT,
+        stageProposal: { ...POST_CALL_SYNTHESIS_STUB_OUTPUT.stageProposal, proposedStage },
+        // A fixture with NO evidence cannot legitimately yield an observed
+        // fact, so the stub emits none rather than an ungrounded one the gate
+        // would (correctly) block.
+        observedFacts: firstRef
+          ? POST_CALL_SYNTHESIS_STUB_OUTPUT.observedFacts.map((f) => ({
+              ...f,
+              sourceRef: firstRef,
+            }))
+          : [],
+      };
+    },
+    async prepare(db, input) {
+      const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      // Seed the opportunity AT THE STAGE THE FIXTURE DECLARES. Unlike the two
+      // other conversation agents, this agent's `stage-proposal-legal` gate
+      // reads `input.opportunity.stage`, and every fixture's expected proposal
+      // is legal only from its own declared stage — seeding a fixed stage and
+      // then rebinding onto it (what the other entries do) would silently
+      // rewrite what each fixture tests.
+      const seeded = await seedPostCallSynthesisFixture(db, opportunity.stage as OpportunityStage);
       const person = { ...(input.person as Record<string, unknown>) };
       const interaction = { ...(input.interaction as Record<string, unknown>) };
       opportunity.id = seeded.opportunity.id;

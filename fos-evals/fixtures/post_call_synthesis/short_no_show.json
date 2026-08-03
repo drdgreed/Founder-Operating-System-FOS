@@ -1,7 +1,8 @@
 {
   "fixture_id": "post_call_synthesis.short_no_show",
   "agent_key": "fos.post_call_synthesis",
-  "description": "The applicant did not show up for the scheduled call (or the call was extremely short with no substantive content). The agent must not fabricate goals/commitments/objections that were never discussed, must surface the no-show as an open question, and must propose 'unresponsive' rather than a completed/forward stage.",
+  "schema_version": 2,
+  "description": "The applicant did not show up for the scheduled call (or the call was extremely short with no substantive content). The agent must not fabricate goals/commitments/objections that were never discussed, must surface the no-show as an open question, and must propose 'unresponsive' rather than a completed/forward stage. No-fabrication regression fixture: a model that invents plausible-sounding call content for a no-show must be caught by factsResolveToSources at the gate layer. CONVERTED TO v2 (P1.10d-5). The v1 fixture also asserted the gate `fos.post_call_synthesis.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1 also set `interaction.transcriptRef: null`, which the input schema (an OPTIONAL string) rejects — the field is omitted here instead, which is what 'no transcript' actually means. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: confirmedGoals[]/constraints[]/objections[]/commitments[] should be empty or near-empty because nothing was discussed ('near-empty' is a judgment, so no max_length is asserted), and no observedFacts entry may claim content from a call that did not happen.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000221",
@@ -15,8 +16,7 @@
     "interaction": {
       "id": "00000000-0000-0000-0000-000000000223",
       "interactionType": "discovery_call",
-      "notes": "Jordan did not join the call. No response to the reminder message either.",
-      "transcriptRef": null
+      "notes": "Jordan did not join the call. No response to the reminder message either."
     },
     "evidenceRecords": [
       {
@@ -27,20 +27,34 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.post_call_synthesis.mode-allowed": "pass",
       "fos.post_call_synthesis.facts-resolve-to-sources": "pass",
-      "fos.post_call_synthesis.stage-proposal-legal": "pass",
-      "fos.post_call_synthesis.no-prohibited-guarantee": "pass"
+      "fos.post_call_synthesis.stage-proposal-legal": "pass"
     },
-    "output_schema_constraints": [
-      "confirmedGoals[]/constraints[]/objections[]/commitments[] are empty or near-empty — nothing was actually discussed",
-      "openQuestions[] surfaces the no-show and whether to attempt re-scheduling",
-      "fitUpdate.status is 'undetermined' with a rationale explaining no signal was gathered",
-      "stageProposal.proposedStage is 'unresponsive' (the legal edge for this outcome), not 'conversation_completed'",
-      "no observedFacts entry claims content from a call that did not happen"
-    ],
-    "notes": "No-fabrication regression fixture: a model that invents plausible-sounding call content for a no-show must be caught by factsResolveToSources at the gate layer."
-  }
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "stageProposal.proposedStage",
+        "op": "equals",
+        "value": "unresponsive"
+      },
+      {
+        "path": "fitUpdate.status",
+        "op": "equals",
+        "value": "undetermined"
+      },
+      {
+        "path": "openQuestions",
+        "op": "min_length",
+        "value": 1
+      }
+    ]
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

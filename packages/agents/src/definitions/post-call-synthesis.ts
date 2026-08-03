@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { enrollmentOpportunity } from "@fos/db/schema";
-import { getInteractionById, OPPORTUNITY_STAGES } from "@fos/db/services";
+import { getInteractionById, OPPORTUNITY_STAGES, OPPORTUNITY_TRANSITIONS } from "@fos/db/services";
 import type { Db } from "@fos/db/services";
 import { factsResolveToSourcesGate } from "../gates/facts-resolve-to-sources.js";
 import { featureModeAllowedGate } from "../gates/feature-mode-allowed.js";
@@ -226,6 +226,40 @@ export type PostCallSynthesisOutput = z.infer<typeof postCallSynthesisOutputSche
 
 // ---- Definition ------------------------------------------------------------
 
+/**
+ * The ONLY sourceRefs `facts-resolve-to-sources` will accept. Defined once and
+ * consumed by BOTH the gate and `promptVocabularies` below, so the model is
+ * shown exactly what the gate enforces (P-004: a judgment-maintained pair of
+ * lists drifts silently).
+ *
+ * #127, propagated here by P1.10d-5. On live run 1 (enrollment_brief) and again
+ * on live run 10 (call_preparation) the model cited REAL input fields —
+ * `opportunity.stage`, `interaction.transcriptRef` — while the gate accepts only
+ * `evidenceRecords[].sourceRef` spellings, and 7 of 8 briefs blocked. It was
+ * grounding honestly against a vocabulary nobody had shown it. This agent is the
+ * most exposed of the three: its evidence set MIXES `interaction_note`,
+ * `interaction_transcript` and `prior_assessment` records, so there are more
+ * plausible-but-wrong spellings to guess at, not fewer.
+ */
+function selectCitableSourceRefs(input: PostCallSynthesisInput): string[] {
+  return input.evidenceRecords.map((r) => r.sourceRef);
+}
+
+/**
+ * The ONLY values `stage-proposal-legal` will accept for this run, read off the
+ * SAME pure matrix `isLegalTransition` consults (`OPPORTUNITY_TRANSITIONS`, not
+ * a hand-copied list), plus the `no_change` sentinel the gate special-cases.
+ *
+ * This agent has a second closed vocabulary, unlike objection_intelligence and
+ * call_preparation — and it is the one a model is most likely to get wrong,
+ * because the plausible answer ("enrolled", after a great call) is exactly the
+ * illegal skip-ahead the gate exists to block. Telling the model the legal set
+ * up front turns a blocked run into a correct one without weakening the gate.
+ */
+function selectProposableStages(input: PostCallSynthesisInput): string[] {
+  return [...OPPORTUNITY_TRANSITIONS[input.opportunity.stage], STAGE_PROPOSAL_NO_CHANGE];
+}
+
 export const FOS_POST_CALL_SYNTHESIS_AGENT_KEY = "fos.post_call_synthesis";
 export const FOS_POST_CALL_SYNTHESIS_FEATURE_FLAG_KEY = "fos.post_call_synthesis";
 
@@ -247,6 +281,13 @@ export const fosPostCallSynthesisAgentDefinition: AgentDefinition<
   permittedMemoryScopes: ["enrollment_opportunity", "person", "interaction", "evidence_records"],
   autonomyCeiling: "review",
   featureFlagKey: FOS_POST_CALL_SYNTHESIS_FEATURE_FLAG_KEY,
+  /** Surfaced to the model verbatim in the user turn — see PromptVocabulary.
+   * Both entries reuse the selectors the gates below enforce with, so "what the
+   * model is told" and "what the gate enforces" are the same expression (#127). */
+  promptVocabularies: (input) => [
+    { field: "observedFacts[].sourceRef", allowed: selectCitableSourceRefs(input) },
+    { field: "stageProposal.proposedStage", allowed: selectProposableStages(input) },
+  ],
   deterministicGates: [
     featureModeAllowedGate({
       key: "fos.post_call_synthesis.mode-allowed",
@@ -255,7 +296,7 @@ export const fosPostCallSynthesisAgentDefinition: AgentDefinition<
     factsResolveToSourcesGate<PostCallSynthesisInput, PostCallSynthesisOutput>({
       key: "fos.post_call_synthesis.facts-resolve-to-sources",
       selectObservedFacts: (output) => output.observedFacts,
-      selectValidSourceRefs: (input) => input.evidenceRecords.map((r) => r.sourceRef),
+      selectValidSourceRefs: selectCitableSourceRefs,
     }),
     // NEW gate (issue #68): the proposed stage must be a legal transition
     // from the opportunity's CURRENT stage per the §12.1 matrix, or the
@@ -275,18 +316,95 @@ export const fosPostCallSynthesisAgentDefinition: AgentDefinition<
   // a prohibited guarantee otherwise reaches canonical state via any free-text
   // field. Same fields the old gate's `selectText` scanned — keep in sync with
   // `buildBodyMarkdown` below.
+  //
+  // Voice tagging (#140 / F-K), propagated here by P1.10d-5. Coverage is
+  // UNCHANGED — every text is still classified; only the appeal path differs.
+  //
+  //   own_voice     — the agent asserting something. Full floor, unappealable.
+  //   reports_input — a field whose PURPOSE is to describe untrusted input, so a
+  //                   `guarantee` near an employment noun means the agent is
+  //                   REPORTING a guarantee, not making one. Floor escalates to
+  //                   tier 2 instead of blocking.
+  //
+  // Per-field reasoning, made fresh rather than copied — this agent's output
+  // splits unusually cleanly into "what the call contained" and "what I
+  // recommend", and the split is not the same one call_preparation has:
+  //
+  //   confirmedGoals / constraints / objections / commitments — reports_input.
+  //     Every one of these is an ACCOUNT OF WHAT WAS SAID on an untrusted call.
+  //     `commitments` is the sharpest case: if the founder actually promised an
+  //     outcome on the call, faithfully recording "founder committed to a job
+  //     guarantee" is the recap doing its job, and finally blocking it would
+  //     destroy the only record of a real compliance incident. That is F-K
+  //     exactly.
+  //   openQuestions — reports_input. It enumerates what the call did NOT settle,
+  //     the same shape as enrollment_brief's `unknowns` and call_preparation's
+  //     `criticalUnknowns`, both already reports_input.
+  //   observedFacts — reports_input, by definition: each entry must cite an
+  //     evidenceRecord, so it is a restatement of untrusted source content.
+  //   fitUpdate.rationale / stageProposal.rationale — own_voice. These are the
+  //     agent's own argument for its own conclusion (cf. enrollment_brief's
+  //     `fitRationale`), and a stage proposal is a recommendation, not a report.
+  //   nextAction — own_voice, same as both prior agents.
+  //   inferences — own_voice, deliberately: the agent's own reasoning, and the
+  //     most plausible place for a smuggled outcome promise.
+  //   followUpBrief — own_voice, and this is the load-bearing judgment. Its
+  //     purpose is forward-looking guidance for the follow-up, not an account of
+  //     what was said (confirmedGoals/objections/observedFacts carry that), so
+  //     the agent is asserting in its own voice. It is also the exact field
+  //     `prompt_injection_transcript` tries to smuggle "we guarantee you a job
+  //     offer" into, which is the strongest reason to keep the unappealable
+  //     floor here. NOTE the counter-read: a follow-up brief will in practice
+  //     recount the call, which is why call_preparation's `summary` had to be
+  //     corrected to reports_input after live run 11 floored it. If a live run
+  //     floors this field on the injection PAIR (both fixture and control), that
+  //     is the same lesson arriving here and the tag should move — a floor on
+  //     the injection fixture ALONE is the gate working.
   complianceReviewText: (output) => [
-    ...output.confirmedGoals,
-    ...output.constraints,
-    ...output.objections,
-    ...output.commitments,
-    ...output.openQuestions,
-    output.fitUpdate.rationale,
-    output.stageProposal.rationale,
-    output.nextAction,
-    output.followUpBrief,
-    ...output.observedFacts.map((f) => f.statement),
-    ...output.inferences.map((i) => i.statement),
+    { text: output.fitUpdate.rationale, field: "fitUpdate.rationale", voice: "own_voice" as const },
+    {
+      text: output.stageProposal.rationale,
+      field: "stageProposal.rationale",
+      voice: "own_voice" as const,
+    },
+    { text: output.nextAction, field: "nextAction", voice: "own_voice" as const },
+    { text: output.followUpBrief, field: "followUpBrief", voice: "own_voice" as const },
+    ...output.inferences.map((i) => ({
+      text: i.statement,
+      field: "inferences",
+      voice: "own_voice" as const,
+    })),
+    // --- reports_input: these six exist to describe the call's own content ---
+    ...output.confirmedGoals.map((text) => ({
+      text,
+      field: "confirmedGoals",
+      voice: "reports_input" as const,
+    })),
+    ...output.constraints.map((text) => ({
+      text,
+      field: "constraints",
+      voice: "reports_input" as const,
+    })),
+    ...output.objections.map((text) => ({
+      text,
+      field: "objections",
+      voice: "reports_input" as const,
+    })),
+    ...output.commitments.map((text) => ({
+      text,
+      field: "commitments",
+      voice: "reports_input" as const,
+    })),
+    ...output.openQuestions.map((text) => ({
+      text,
+      field: "openQuestions",
+      voice: "reports_input" as const,
+    })),
+    ...output.observedFacts.map((f) => ({
+      text: f.statement,
+      field: "observedFacts",
+      voice: "reports_input" as const,
+    })),
   ],
   artifact: {
     // Already in the artifact_type enum (`artifact_record.ts`) — no
