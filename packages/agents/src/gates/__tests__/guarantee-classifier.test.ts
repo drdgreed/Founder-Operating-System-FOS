@@ -790,3 +790,34 @@ describe("F-AB: a FIRST-PERSON assertion is final, whatever field it arrives fro
     expect(decision.verdict).toBe("block");
   });
 });
+
+describe("F-AC: contrastive negation denies a guarantee without a negation token", () => {
+  // Live run 14 floored two `recommendedClose` texts that DENY a guarantee
+  // using no negation word at all. `recommendedClose` is own_voice, so the
+  // floor was FINAL and tier 2 never saw it — F-P's inversion, one phrasing
+  // later, on the founder-facing script field.
+  it.each([
+    "framing the program as a step toward his goal rather than a guarantee of licensure or employment",
+    "supports skill-building and job-search resources rather than guaranteeing a specific role, timeline, or interview/hiring outcome",
+    "position this as preparation instead of a guaranteed job placement",
+  ])("FOS1-GCLS-fac-01: a contrastive denial is not floored: %s", (text) => {
+    expect(tier1FloorMatch(text)).toBeNull();
+  });
+
+  it.each([
+    "We guarantee employment rather than just training.",
+    "We guarantee you a job rather than merely coaching.",
+    "guaranteed job placement rather than a stipend",
+  ])("FOS1-GCLS-fac-02: a promise followed by a contrast STILL blocks: %s", (text) => {
+    // The evasion the guard must not open. Adding these markers to NEGATOR
+    // wholesale was MEASURED wrong on 4 of 7 cases — it skipped exactly these.
+    // The guard is directional: the rejected alternative is what FOLLOWS the
+    // marker, so only a guarantee word AFTER it counts as denied.
+    expect(tier1FloorMatch(text)).not.toBeNull();
+  });
+
+  it("FOS1-GCLS-fac-03: ordinary negation and anchored arms are untouched", () => {
+    expect(tier1FloorMatch("We cannot guarantee an employment outcome.")).toBeNull();
+    expect(tier1FloorMatch("we guarantee you a job")?.anchored).toBe(true);
+  });
+});

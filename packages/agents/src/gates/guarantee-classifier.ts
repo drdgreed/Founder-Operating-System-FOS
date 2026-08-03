@@ -188,6 +188,43 @@ const NEGATOR =
 const NEGATION_RE = new RegExp(`\\b${NEGATOR}\\b`, "i");
 
 /**
+ * CONTRASTIVE negation (F-AC): "X rather than Y", "X instead of Y".
+ *
+ * Live run 14 floored two `recommendedClose` texts that DENY a guarantee using
+ * no negation token at all:
+ *
+ *   "...a step toward his goal RATHER THAN a guarantee of licensure or employment"
+ *   "...job-search resources RATHER THAN guaranteeing a specific role or outcome"
+ *
+ * `NEGATOR` lists words like "not"/"cannot"; a contrastive construction carries
+ * none, so the clause looked assertive. `recommendedClose` is `own_voice`, so
+ * the floor was FINAL and tier 2 never saw it — F-P's exact inversion, one
+ * phrasing later, on the founder-facing script field.
+ *
+ * DIRECTIONAL ON PURPOSE, and this is the whole safety argument. Adding these
+ * markers to `NEGATOR` wholesale was measured wrong on 4 of 7 discriminating
+ * cases: it would skip "We guarantee employment RATHER THAN just training",
+ * where the promise is made and the contrast merely dismisses an alternative.
+ *
+ * The rejected alternative is what FOLLOWS the marker. So the clause is treated
+ * as denying only when the guarantee word appears AFTER it:
+ *
+ *   "...rather than a guarantee of licensure"      guarantee AFTER  -> deny
+ *   "We guarantee employment rather than training"  guarantee BEFORE -> assert
+ *
+ * Measured 7/7 on those cases where the wholesale form scored 3/7.
+ */
+const CONTRASTIVE_RE = /\b(?:rather\s+than|instead\s+of|as\s+opposed\s+to)\b/i;
+const GUARANTEE_TOKEN_RE = new RegExp(GUARANTEE_VERB, "i");
+
+function isContrastivelyDenied(clause: string): boolean {
+  const marker = CONTRASTIVE_RE.exec(clause);
+  if (!marker) return false;
+  const guarantee = GUARANTEE_TOKEN_RE.exec(clause);
+  return guarantee !== null && guarantee.index > marker.index;
+}
+
+/**
  * Clause boundaries: sentence terminators, semicolons, and the contrastive
  * "but", which introduces a fresh assertion. Splitting on "but" is what stops
  * a denial being used as a prefix that disables the check for what follows:
@@ -335,7 +372,7 @@ export function tier1FloorMatch(text: string): Tier1FloorMatch | null {
   // Bare proximity blocks only in a clause that ASSERTS. A clause that denies
   // falls through to tier 2 rather than being hard-blocked here (F-P).
   for (const clause of normalized.split(CLAUSE_SPLIT_RE)) {
-    if (NEGATION_RE.test(clause)) continue;
+    if (NEGATION_RE.test(clause) || isContrastivelyDenied(clause)) continue;
     // A first-person assertion is FINAL — the programme itself promising an
     // outcome has no innocent reading, whatever field it arrives from.
     if (TIER1_FIRST_PERSON_PATTERN.test(clause)) {

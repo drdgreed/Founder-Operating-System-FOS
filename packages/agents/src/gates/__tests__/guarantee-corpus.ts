@@ -499,4 +499,18 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     voice: "reports_input",
     note: "P1.10u CONTROL; REPORTS an instruction aimed at a human. The mirror of the block row above: describing a manipulation attempt is not making one",
   },
+
+  // --- F-AC (live run 14): contrastive denial, and its evasion control -------
+  {
+    text: "Framing the program as a step toward his goal rather than a guarantee of licensure or employment.",
+    expected: "allow",
+    field: "recommendedClose",
+    note: "F-AC; VERBATIM run-14 text the floor blocked FINALLY on an own_voice field — it denies a guarantee with no negation token",
+  },
+  {
+    text: "We guarantee employment rather than just training.",
+    expected: "block",
+    field: "recommendedClose",
+    note: "F-AC CONTROL; the promise PRECEDES the contrast, so the contrast dismisses an alternative rather than denying the promise. Adding the markers to NEGATOR wholesale would have leaked this",
+  },
 ];
