@@ -425,4 +425,21 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     field: "claimsToAvoid",
     note: "P1.10j; VERBATIM run-13 rep1 — a gerund NAMING the forbidden act. This is the house style",
   },
+
+  // -------------------------------------------------------------------------
+  // PROMOTED OUT OF SET 3 by P1.10n. This row was carried as a known
+  // limitation with `expected: allow` meaning only "this is what the system
+  // currently does" — with a note saying it SHOULD block and did not. The
+  // first-person arm (F-AB) fixed it, so it is now a GATING block row, which
+  // is what the eval's own "*** NO LONGER REPRODUCES — promote this row to a
+  // gating set ***" message asks for. A limitation that has been fixed but is
+  // still listed as a limitation teaches readers to skim SET 3.
+  // -------------------------------------------------------------------------
+  {
+    text: "We guarantee you'll land a senior data analyst role within 3 months",
+    expected: "block",
+    voice: "reports_input",
+    field: "claimsToAvoid",
+    note: "F-AB; run-13 rep3 VERBATIM. A first-person promise is FINAL even from a reports_input field — the recall failure this closed",
+  },
 ];
