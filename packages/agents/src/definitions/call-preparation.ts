@@ -197,7 +197,23 @@ export const fosCallPreparationAgentDefinition: AgentDefinition<
     "objective, a three-sentence summary, critical unknowns, top questions, likely objections, " +
     "permitted claims, claims to avoid, and a recommended close. Never state a fact without a " +
     "source, and never guarantee an employment, recruiter, salary, or interview outcome — " +
-    "including inside a 'permitted' claim.",
+    "including inside a 'permitted' claim. " +
+    // Live run 13: strong_fit was blocked 4 times out of 5, and every blocking
+    // text was a claimsToAvoid ENTRY — the model correctly enumerating what not
+    // to say, and the compliance gate reading the enumeration as the claim.
+    //
+    // Half of those are fixed by F-AA (the classifier now knows the field). The
+    // other half are not, and SHOULD NOT BE: an entry reading "We guarantee
+    // you'll land a senior data analyst role" delivers the promise verbatim,
+    // and the gate is right to block it. A field name never licenses a live
+    // promise — that is an F-AA corpus control.
+    //
+    // So the fix belongs here, not in the gate. A field whose job is to name
+    // forbidden language needs a house style, or the model will keep writing it
+    // both ways and tripping a gate that cannot read intent.
+    "Write each 'claims to avoid' entry as a NAMED CATEGORY, never as a quoted promise: " +
+    '"Guaranteeing a specific role or timeline", not "We guarantee you\'ll land the role in ' +
+    '3 months". Naming the forbidden claim is what the field is for; writing it out states it.',
   inputSchema: callPreparationInputSchema,
   outputSchema: callPreparationOutputSchema,
   permittedTools: [],

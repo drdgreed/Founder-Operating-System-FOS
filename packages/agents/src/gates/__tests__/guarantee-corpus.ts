@@ -411,4 +411,18 @@ export const GUARANTEE_CORPUS: GuaranteeCorpusEntry[] = [
     field: "claimsToAvoid",
     note: "F-AA CONTROL; a LIVE PROMISE. Arriving from a reports_input field must not save it — a field name never licenses one",
   },
+
+  // -------------------------------------------------------------------------
+  // P1.10j (live run 13). strong_fit was blocked 4 of 5, and every blocking
+  // text was a claimsToAvoid ENTRY. The two phrasings the model produces are
+  // NOT equivalent, and only one of them should pass — which is why the agent
+  // now has a house style rather than the gate having a new exception.
+  // -------------------------------------------------------------------------
+  {
+    text: "Guaranteeing Ada will land a Senior Data Analyst role within 3 months",
+    expected: "allow",
+    voice: "reports_input",
+    field: "claimsToAvoid",
+    note: "P1.10j; VERBATIM run-13 rep1 — a gerund NAMING the forbidden act. This is the house style",
+  },
 ];
