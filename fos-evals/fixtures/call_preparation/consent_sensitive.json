@@ -45,7 +45,7 @@
     "control_must_match": [],
     "output_assertions": [
       {
-        "path": "claimsToAvoid",
+        "path": "claims.claimsToAvoid",
         "op": "min_length",
         "value": 1
       }
