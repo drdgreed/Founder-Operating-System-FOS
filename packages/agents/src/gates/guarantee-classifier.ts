@@ -175,6 +175,7 @@ const ACQUIRE_VERB = "(?:gets?|getting|got|lands?|landing|places?|placing|secure
 // Contracted or plain future: "will" / "…'ll".
 const WILL = "(?:\\bwill|'ll)";
 // Optional article, including the definite one — "get you the job".
+// Optional article, including the definite one — "get you the job".
 const ARTICLE = "(?:an?|the)\\s+";
 
 /**
@@ -273,7 +274,21 @@ function normalizeForMatch(text: string): string {
  * Tier 1: returns the matching pattern's block decision, or null if the floor
  * does not fire (→ escalate to Tier 2). Pure, synchronous, no model call.
  */
-export function tier1FloorBlock(text: string): GuaranteeDecision | null {
+/**
+ * Which group of floor patterns matched. The distinction is load-bearing:
+ * an ANCHORED match is a final block that no field policy may defer, while a
+ * PROXIMITY match defers to tier 2 for a denying clause (F-P) or a
+ * reports_input field (F-K).
+ *
+ * Returned rather than collapsed, because collapsing it is exactly the defect
+ * this type exists to prevent — see `evaluateGuaranteeText`.
+ */
+export interface Tier1FloorMatch {
+  decision: GuaranteeDecision;
+  anchored: boolean;
+}
+
+export function tier1FloorMatch(text: string): Tier1FloorMatch | null {
   const normalized = normalizeForMatch(text);
   const block = (): GuaranteeDecision => ({
     verdict: "block",
@@ -282,7 +297,7 @@ export function tier1FloorBlock(text: string): GuaranteeDecision | null {
 
   // Anchored constructions block outright, negated or not.
   for (const pattern of TIER1_ANCHORED_PATTERNS) {
-    if (pattern.test(normalized)) return block();
+    if (pattern.test(normalized)) return { decision: block(), anchored: true };
   }
 
   // Bare proximity blocks only in a clause that ASSERTS. A clause that denies
@@ -290,7 +305,7 @@ export function tier1FloorBlock(text: string): GuaranteeDecision | null {
   for (const clause of normalized.split(CLAUSE_SPLIT_RE)) {
     if (NEGATION_RE.test(clause)) continue;
     for (const pattern of TIER1_PROXIMITY_PATTERNS) {
-      if (pattern.test(clause)) return block();
+      if (pattern.test(clause)) return { decision: block(), anchored: false };
     }
   }
   return null;
@@ -402,6 +417,11 @@ export function buildClassifierUserContent(text: string, nonce: string, field?: 
     provenance +
     `<copy nonce="${nonce}">\n${text}\n</copy nonce="${nonce}">`
   );
+}
+
+/** Back-compatible boolean-ish view of {@link tier1FloorMatch}. */
+export function tier1FloorBlock(text: string): GuaranteeDecision | null {
+  return tier1FloorMatch(text)?.decision ?? null;
 }
 
 class TimeoutError extends Error {}
@@ -529,9 +549,22 @@ export async function evaluateGuaranteeText(
     // text is derived from untrusted input, and turning it into a signal that
     // steers the classifier is the D9 boundary this whole design defends.
     const floorIsFinal = options?.floorIsFinal ?? true;
-    const floor = tier1FloorBlock(text);
-    if (floor && floorIsFinal) {
-      return { ...floor, tier: "tier1-floor" };
+    const floor = tier1FloorMatch(text);
+    // An ANCHORED match is final REGARDLESS of field policy. Only a proximity
+    // match defers.
+    //
+    // This previously read `if (floor && floorIsFinal)`, which discarded the
+    // whole floor for any reports_input field — including the anchored arms
+    // that exist precisely because they have no innocent reading. The recall
+    // eval caught it: "We guarantee you'll land a senior data analyst role
+    // within 3 months" was ALLOWED from `claimsToAvoid`, a first-person promise
+    // written out verbatim.
+    //
+    // Latent when #140 shipped (only enrollment_brief had reports_input fields,
+    // none carrying promises) and reachable once #147/#153 spread the tag to
+    // claimsToAvoid — a field whose PURPOSE is to quote forbidden language.
+    if (floor && (floor.anchored || floorIsFinal)) {
+      return { ...floor.decision, tier: "tier1-floor" };
     }
     const decision = await classifyGuarantee(
       text,

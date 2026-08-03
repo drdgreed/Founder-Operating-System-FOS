@@ -6,6 +6,7 @@ import {
   GUARANTEE_CLASSIFIER_SYSTEM_PROMPT,
   GUARANTEE_CLASSIFIER_TIMEOUT_MS,
   buildClassifierUserContent,
+  tier1FloorMatch,
 } from "../guarantee-classifier.js";
 import { GUARANTEE_CORPUS } from "./guarantee-corpus.js";
 import type { GuaranteeClassifierDeps } from "../guarantee-classifier.js";
@@ -629,5 +630,58 @@ describe("F-AA: the field NAME reaches tier 2 as trusted framing", () => {
     const p = GUARANTEE_CLASSIFIER_SYSTEM_PROMPT;
     expect(p).toContain("It does not license ignoring the text");
     expect(p).toContain("still a block, because it delivers the promise");
+  });
+});
+
+describe("P1.10k: an ANCHORED floor match is final regardless of field policy", () => {
+  // KNOWN GAP, deliberately left failing-free by scoping the assertion to what
+  // the split actually fixes. The verbatim run-13 text
+  //   "We guarantee you'll land a senior data analyst role within 3 months"
+  // is a PROXIMITY match, not an anchored one, because the anchored arms
+  // require the article immediately before the employment noun and this has
+  // three modifiers in between. Widening ARTICLE to tolerate modifiers WAS
+  // tried and reverted: it made the F-K naming form ("Guaranteeing Ada will
+  // land a Senior Data Analyst role") anchored too, since the two differ only
+  // by a leading gerund. Tracked as F-AB.
+  it("FOS1-GCLS-anchor-01: a first-person promise from a reports_input field still blocks", async () => {
+    // The recall failure. This text was ALLOWED from `claimsToAvoid` because
+    // `floorIsFinal: false` discarded the entire floor — including the anchored
+    // arms, which exist precisely because they have no innocent reading.
+    const model: ModelClient = {
+      generateStructured: async () => {
+        throw new Error("tier 2 must never be reached — the anchored floor is final");
+      },
+    };
+    const decision = await evaluateGuaranteeText(
+      "We guarantee you'll land a role within 3 months",
+      { model },
+      { floorIsFinal: false, field: "claimsToAvoid" },
+    );
+    expect(decision.tier).toBe("tier1-floor");
+    expect(decision.verdict).toBe("block");
+  });
+
+  it("FOS1-GCLS-anchor-02: a PROXIMITY match still defers, so F-K and F-P survive", async () => {
+    // The other half must not regress: naming a guarantee from a reports_input
+    // field escalates, which is the whole point of F-K.
+    const model: ModelClient = {
+      generateStructured: async () => ({
+        output: { verdict: "allow", confidence: "high", reason: "names a category" },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    };
+    const decision = await evaluateGuaranteeText(
+      "Guaranteeing Ada will land a Senior Data Analyst role within 3 months",
+      { model },
+      { floorIsFinal: false, field: "claimsToAvoid" },
+    );
+    expect(decision.tier).toBe("tier2-classifier");
+    expect(decision.verdict).toBe("allow");
+  });
+
+  it("FOS1-GCLS-anchor-03: tier1FloorMatch reports WHICH group matched", () => {
+    expect(tier1FloorMatch("we guarantee you a job")?.anchored).toBe(true);
+    expect(tier1FloorMatch("guaranteed employment on completion")?.anchored).toBe(false);
+    expect(tier1FloorMatch("prepared for interviews")).toBeNull();
   });
 });
