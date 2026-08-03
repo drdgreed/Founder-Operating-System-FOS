@@ -115,6 +115,9 @@ async function reviewTextsConcurrently(
         const entry = texts[index]!;
         const decision = await reviewer(entry.text, {
           floorIsFinal: entry.voice === "own_voice",
+          // F-AA: the field NAME is definition-authored static policy, so it is
+          // safe to surface as framing. The field VALUE stays untrusted data.
+          field: entry.field,
         });
         if (decision.usage) {
           reviewUsage.inputTokens += decision.usage.inputTokens;
