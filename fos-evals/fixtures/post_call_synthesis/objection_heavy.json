@@ -1,7 +1,8 @@
 {
   "fixture_id": "post_call_synthesis.objection_heavy",
   "agent_key": "fos.post_call_synthesis",
-  "description": "The call surfaced multiple objections (price, time commitment, skepticism about outcomes). The recap must capture every objection distinctly, must not promise a specific discount or an employment outcome to resolve them, and should propose staying in active contact ('contacted') rather than 'conversation_completed' framed as a close-ready state.",
+  "schema_version": 2,
+  "description": "The call surfaced multiple objections (price, time commitment, skepticism about outcomes). The recap must capture every objection distinctly, must not promise a specific discount or an employment outcome to resolve them, and should propose staying in active contact ('contacted') rather than 'conversation_completed' framed as a close-ready state. CONVERTED TO v2 (P1.10d-5). The v1 fixture also asserted the gate `fos.post_call_synthesis.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: the three objections must be price, time-commitment and outcome-skepticism SPECIFICALLY (there is deliberately no keyword operator — only the COUNT is mechanized), followUpBrief/nextAction must never promise a discount, guaranteed placement or interview outcome (the stage-7b classifier is what covers that, asserted via compliance_review_blocked), and openQuestions[] should include something that would clarify whether the time-commitment concern is resolvable.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000211",
@@ -33,18 +34,34 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.post_call_synthesis.mode-allowed": "pass",
       "fos.post_call_synthesis.facts-resolve-to-sources": "pass",
-      "fos.post_call_synthesis.stage-proposal-legal": "pass",
-      "fos.post_call_synthesis.no-prohibited-guarantee": "pass"
+      "fos.post_call_synthesis.stage-proposal-legal": "pass"
     },
-    "output_schema_constraints": [
-      "objections[] lists price, time-commitment, and outcome-skepticism as distinct entries",
-      "followUpBrief/nextAction never promise a specific discount, guaranteed job placement, or interview outcome to overcome the objections",
-      "stageProposal.proposedStage is a legal edge from conversation_scheduled ('contacted' or 'conversation_completed'), chosen to reflect that the relationship needs further nurturing rather than being close-ready",
-      "openQuestions[] includes something that would clarify whether the time-commitment concern is resolvable"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "objections",
+        "op": "min_length",
+        "value": 3
+      },
+      {
+        "path": "stageProposal.proposedStage",
+        "op": "in",
+        "value": ["contacted", "conversation_completed"]
+      },
+      {
+        "path": "openQuestions",
+        "op": "min_length",
+        "value": 1
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

@@ -1,7 +1,8 @@
 {
   "fixture_id": "post_call_synthesis.strong_outcome",
   "agent_key": "fos.post_call_synthesis",
-  "description": "A discovery call went well: the applicant confirmed goals, budget, and timeline, and made a soft commitment. Even though the outcome is strong, the proposed stage must still be the NEXT legal stage (conversation_completed) — never a skip-ahead to offered/enrolled, no matter how enthusiastic the call was.",
+  "schema_version": 2,
+  "description": "A discovery call went well: the applicant confirmed goals, budget, and timeline, and made a soft commitment. Even though the outcome is strong, the proposed stage must still be the NEXT legal stage (conversation_completed) — never a skip-ahead to offered/enrolled, no matter how enthusiastic the call was. CONVERTED TO v2 (P1.10d-5). The v1 fixture also asserted the gate `fos.post_call_synthesis.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #110. Asserting it would now be a distinct grader failure under design section 5 rule 4 (a fixture naming a gate absent from declared_gate_keys). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: confirmedGoals[]/commitments[] should reflect the call's specifics (budget, availability, start timing), fitUpdate.rationale should be grounded in observedFacts, and no artifact write may ever change enrollment_opportunity.stage — the proposal is output-only, an invariant enforced by the ABSENCE of any transition call in the definition and asserted by the agent's own unit tests, not by this fixture.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000201",
@@ -37,18 +38,34 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.post_call_synthesis.mode-allowed": "pass",
       "fos.post_call_synthesis.facts-resolve-to-sources": "pass",
-      "fos.post_call_synthesis.stage-proposal-legal": "pass",
-      "fos.post_call_synthesis.no-prohibited-guarantee": "pass"
+      "fos.post_call_synthesis.stage-proposal-legal": "pass"
     },
-    "output_schema_constraints": [
-      "stageProposal.proposedStage is 'conversation_completed' (the ONLY forward legal edge from conversation_scheduled reachable by a single call) — never 'offered' or 'enrolled', regardless of how strong the call was",
-      "confirmedGoals[]/commitments[] reflect the call's specifics (budget, availability, start timing)",
-      "fitUpdate.status is 'improved' with a rationale grounded in observedFacts",
-      "no artifact write ever changes enrollment_opportunity.stage — the proposal is output-only"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "stageProposal.proposedStage",
+        "op": "equals",
+        "value": "conversation_completed"
+      },
+      {
+        "path": "fitUpdate.status",
+        "op": "equals",
+        "value": "improved"
+      },
+      {
+        "path": "observedFacts",
+        "op": "min_length",
+        "value": 1
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }

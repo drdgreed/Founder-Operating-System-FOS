@@ -1,7 +1,8 @@
 {
   "fixture_id": "post_call_synthesis.contradicts_prior_assessment",
   "agent_key": "fos.post_call_synthesis",
-  "description": "A `prior_assessment` evidence record (from the earlier Enrollment Brief / Call Preparation stage) characterized the applicant as price-insensitive and highly motivated. The call itself surfaced the opposite: a serious price objection and cooling interest. The recap must be grounded in THIS call's evidence, not the stale prior assessment — observedFacts/inferences must reflect what was actually said now, and fitUpdate must be able to move in the 'declined' direction even though it contradicts the earlier read.",
+  "schema_version": 2,
+  "description": "A `prior_assessment` evidence record (from the earlier Enrollment Brief / Call Preparation stage) characterized the applicant as price-insensitive and highly motivated. The call itself surfaced the opposite: a serious price objection and cooling interest. The recap must be grounded in THIS call's evidence, not the stale prior assessment — observedFacts/inferences must reflect what was actually said now, and fitUpdate must be able to move in the 'declined' direction even though it contradicts the earlier read. CONVERTED TO v2 (P1.10d-5). The v1 fixture also asserted the gate `fos.post_call_synthesis.no-prohibited-guarantee`, which this definition NO LONGER DECLARES — the keyword gate was replaced by the stage-7b semantic classifier in #110, so asserting it is now a distinct grader failure (design section 5 rule 4). Stage-7b coverage is asserted via `compliance_review_blocked` instead. v1's `output_schema_constraints` were prose; the mechanizable subset is now `output_assertions`, and the rest stays here, asserted by nothing: objections[] must include the price objection surfaced on THIS call even though it contradicts the prior_assessment record; observedFacts[] must cite interaction.note.primary for that objection rather than the prior_assessment sourceRef used as though it were current (WHICH sourceRef a given statement cites is a judgment about meaning — the gate only enforces that every cited ref resolves); and the prior_assessment content may inform a labeled inference about trajectory but must never be presented as an observedFact about the current call.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000231",
@@ -32,18 +33,29 @@
     ]
   },
   "expected": {
-    "status": "succeeded",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.post_call_synthesis.mode-allowed": "pass",
       "fos.post_call_synthesis.facts-resolve-to-sources": "pass",
-      "fos.post_call_synthesis.stage-proposal-legal": "pass",
-      "fos.post_call_synthesis.no-prohibited-guarantee": "pass"
+      "fos.post_call_synthesis.stage-proposal-legal": "pass"
     },
-    "output_schema_constraints": [
-      "objections[] includes the price objection surfaced on THIS call, even though it contradicts the prior_assessment record",
-      "fitUpdate.status reflects the new call evidence (e.g. 'declined' or 'unchanged' with a rationale naming the contradiction), not a naive carry-forward of the prior assessment's 'highly motivated' read",
-      "observedFacts[] cites the interaction.note.primary sourceRef for the price objection, not the prior_assessment sourceRef used as though it were current",
-      "the prior_assessment content may inform an inference (labeled, with confidence) about the applicant's trajectory but must never be presented as an observedFact about the current call"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "objections",
+        "op": "min_length",
+        "value": 1
+      },
+      {
+        "path": "fitUpdate.status",
+        "op": "not_equals",
+        "value": "improved"
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }
