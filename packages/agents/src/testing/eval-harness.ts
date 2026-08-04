@@ -294,6 +294,32 @@ export function seedPersonalizedFollowUpFixture(db: EvalDb, opportunityStage: Op
   return seedOpportunityGraph(db, opportunityStage);
 }
 
+/**
+ * `fos.next_best_action` recommends ONE action for an opportunity.
+ *
+ * `seedConversationFixture` does NOT fit and is deliberately not used: this
+ * agent's input schema has no `interaction` field, so an interaction row would
+ * be unreferenceable — the same reason `fos.personalized_follow_up` seeds the
+ * bare opportunity graph. Everything else this agent reasons over
+ * (`consentedChannels`, `cooldownUntil`, `availableOffers`,
+ * `allowedActionsByStage`, `existingOpenActions`, `scheduledActivities`, `now`)
+ * is caller-supplied least-privilege INPUT with no canonical table behind it —
+ * every one of those registries is an explicit unseeded FLAG on the definition
+ * — so there is nothing more to seed and nothing more to rebind.
+ *
+ * The stage is a required parameter, and here it is LOAD-BEARING in a way it is
+ * not for `fos.personalized_follow_up` (where it is only coherence): TWO gates
+ * read it. `not-terminal-status` blocks purely on it — that gate is a function
+ * of the input alone, which is what makes the `terminal_stage_enrolled` fixture
+ * able to REQUIRE `policy_blocked` without requiring the model to misbehave —
+ * and `lifecycle-legal` indexes `allowedActionsByStage` by it. Seeding a fixed
+ * stage and rebinding it onto the input would silently rewrite what every one
+ * of those fixtures tests.
+ */
+export function seedNextBestActionFixture(db: EvalDb, opportunityStage: OpportunityStage) {
+  return seedOpportunityGraph(db, opportunityStage);
+}
+
 /** Env var the stub Notion client reads its (irrelevant) token from. Set by
  * `createStubNotionClient` itself so a REAL Notion token env var is never
  * consulted during an eval run (plan §A2). */

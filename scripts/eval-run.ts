@@ -54,6 +54,12 @@ import {
   fosCallPreparationAgentDefinition,
   fosPostCallSynthesisAgentDefinition,
   fosPersonalizedFollowUpAgentDefinition,
+  fosNextBestActionAgentDefinition,
+  FOS_NEXT_BEST_ACTION_AGENT_KEY,
+  FOS_NEXT_BEST_ACTION_FEATURE_FLAG_KEY,
+  NBA_UNDETERMINED_OFFER,
+  NBA_ACTION_TYPES,
+  nbaActionIsContact,
   FOS_PERSONALIZED_FOLLOW_UP_AGENT_KEY,
   FOS_PERSONALIZED_FOLLOW_UP_FEATURE_FLAG_KEY,
   FOS_CALL_PREPARATION_AGENT_KEY,
@@ -79,6 +85,7 @@ import {
   seedCallPreparationFixture,
   seedPostCallSynthesisFixture,
   seedPersonalizedFollowUpFixture,
+  seedNextBestActionFixture,
   setEvalFeatureFlag,
   createStubNotionClient,
   stubComplianceReviewer,
@@ -266,6 +273,130 @@ const PERSONALIZED_FOLLOW_UP_STUB_OUTPUT = {
   ],
   riskFlags: ["The evidence for the applicant's timeline is a single self-reported source."],
 };
+
+/**
+ * Stub payload for `fos.next_best_action` — the DEAREST of the six, and the
+ * only one whose payload cannot be a constant with a few fields rebound.
+ *
+ * Every other agent's stub cites ONE input vocabulary (`evidenceRecords`).
+ * This agent is the most-gated in the system: SIX caller-supplied policy sets
+ * (`consentedChannels`, `cooldownUntil`, `now`, `availableOffers`,
+ * `allowedActionsByStage`, plus the two action-key sets) jointly determine
+ * which single `actionType` is even legal, and four separate gates block on
+ * getting it wrong. So the stub does not rebind fields — it DERIVES the action
+ * the way a well-behaved model would, from the same expressions the gates
+ * evaluate:
+ *
+ *   actionType   <- `allowedActionsByStage[stage]` (lifecycle-legal), narrowed
+ *                   to contact-safe types when consent/cooldown forbid contact
+ *                   (consent, cooldown), minus anything already open or
+ *                   scheduled (no-duplicate-task, no-scheduled-activity-conflict)
+ *   channel      <- `consentedChannels` (consent)
+ *   offer        <- `availableOffers`, else the undetermined sentinel (offer-available)
+ *   actionTarget <- the SEEDED person id, so the action-key gates match the
+ *                   identity the run actually recommends
+ *
+ * Contact-ness comes from the definition's own `nbaActionIsContact`, not a
+ * re-listing here — that is the single property consent AND cooldown both hang
+ * on, and a second copy of it would drift.
+ *
+ * WHY NOT A CONSTANT. A hardcoded contact action fails `consent` on every
+ * fixture with no consent recorded, and `cooldown` on every fixture inside a
+ * cooldown window — which looks like a gate catching a real problem and is the
+ * live-run-1 failure shape. It would also make three fixtures unable to
+ * distinguish "the guardrail works" from "the stub misbehaved".
+ *
+ * Tolerates an input missing EVERY optional set (FOS1-PROP-05 drives it that
+ * way): with no stage table, no consent, and no offers, it degrades to
+ * `no_action` / no channel / the undetermined sentinel — a payload that still
+ * parses, and whose gate outcome is then honestly determined by the fixture.
+ */
+const NBA_NATURAL_CHANNEL: Readonly<Record<string, string>> = {
+  send_follow_up_email: "email",
+  send_follow_up_sms: "sms",
+};
+
+interface StubActionKey {
+  type: string;
+  target: string;
+}
+
+function nextBestActionStubOutput(input: Record<string, unknown>): unknown {
+  const opportunity = (input.opportunity ?? {}) as { stage?: string };
+  const person = (input.person ?? {}) as { id?: string };
+  const allowedByStage = (input.allowedActionsByStage ?? {}) as Record<string, string[]>;
+  const stageLegal = (opportunity.stage ? allowedByStage[opportunity.stage] : undefined) ?? [];
+  const consented = (input.consentedChannels as string[] | undefined) ?? [];
+  const offers = (input.availableOffers as string[] | undefined) ?? [];
+  const openActions = (input.existingOpenActions as StubActionKey[] | undefined) ?? [];
+  const scheduled = (input.scheduledActivities as StubActionKey[] | undefined) ?? [];
+  const now = input.now as string | undefined;
+  const cooldownUntil = input.cooldownUntil as string | null | undefined;
+
+  // The action's identity. The gates match on `type` + `target`, and `prepare`
+  // has already rebound `person.id` to the seeded row, so this is the same
+  // identity `existingOpenActions`/`scheduledActivities` would name.
+  const actionTarget = person.id ?? "unknown-target";
+
+  // Cooldown, evaluated the way `cooldownGate` does — including its fail-CLOSED
+  // treatment of an unparseable time. A stub that read this more leniently than
+  // the gate would propose a contact the gate then blocks.
+  const nowMs = now === undefined ? NaN : new Date(now).getTime();
+  const untilMs = cooldownUntil ? new Date(cooldownUntil).getTime() : NaN;
+  const cooldownActive =
+    cooldownUntil !== undefined &&
+    cooldownUntil !== null &&
+    (Number.isNaN(nowMs) || Number.isNaN(untilMs) || nowMs < untilMs);
+  const contactPermitted = consented.length > 0 && !cooldownActive;
+
+  const takenKeys = new Set(
+    [...openActions, ...scheduled].map((action) => `${action.type} ${action.target}`),
+  );
+  // `NBA_ACTION_TYPES` order is itself the preference order (contact types
+  // first, `internal_task`/`no_action` last), so the stub proposes the most
+  // substantive action the guardrails actually permit.
+  const actionType =
+    NBA_ACTION_TYPES.filter(
+      (type) =>
+        stageLegal.includes(type) &&
+        (contactPermitted || !nbaActionIsContact(type)) &&
+        !takenKeys.has(`${type} ${actionTarget}`),
+    )[0] ?? "no_action";
+
+  // Only a CONTACT action carries a channel, and only ever one the caller
+  // consented to. `contactPermitted` guarantees `consented[0]` exists here.
+  const channel = nbaActionIsContact(actionType)
+    ? NBA_NATURAL_CHANNEL[actionType] !== undefined &&
+      consented.includes(NBA_NATURAL_CHANNEL[actionType]!)
+      ? NBA_NATURAL_CHANNEL[actionType]
+      : consented[0]
+    : undefined;
+
+  // `.datetime()`-constrained, so it is derived from the fixture's own `now`
+  // rather than written as a literal — and omitted entirely when the fixture
+  // supplies no parseable `now`, because an Invalid-Date string fails stage-6
+  // validation outright.
+  const recommendedDueAt = Number.isNaN(nowMs)
+    ? undefined
+    : new Date(nowMs + 3 * 24 * 60 * 60 * 1000).toISOString();
+
+  return {
+    actionType,
+    actionTarget,
+    ...(channel === undefined ? {} : { channel }),
+    // Never a fabricated offer: the sentinel is the honest value when the
+    // caller has none available.
+    offer: offers[0] ?? NBA_UNDETERMINED_OFFER,
+    summary: `Recommend "${actionType}" as the single next step for this opportunity.`,
+    rationale:
+      "Chosen from the action types permitted at this opportunity's current stage, on a " +
+      "channel with recorded consent and outside any active cooldown. No outcome is promised.",
+    businessImpact: "medium",
+    urgency: "medium",
+    confidence: "medium",
+    ...(recommendedDueAt === undefined ? {} : { recommendedDueAt }),
+  };
+}
 
 export interface RunEvalSuiteOptions {
   agentKey: string;
@@ -560,6 +691,41 @@ export const EVAL_AGENTS: Record<string, EvalAgentSetup> = {
       person.id = seeded.person.id;
       // No `interaction` to rebind: this agent's input schema has none (see
       // `seedPersonalizedFollowUpFixture`).
+      return { workspaceId: seeded.workspace.id, input: { ...input, opportunity, person } };
+    },
+  },
+
+  [FOS_NEXT_BEST_ACTION_AGENT_KEY]: {
+    fixtureDir: "next_best_action",
+    definition: fosNextBestActionAgentDefinition,
+    featureFlagKey: FOS_NEXT_BEST_ACTION_FEATURE_FLAG_KEY,
+    // Derived in full from the prepared input — see `nextBestActionStubOutput`.
+    // This is the only agent where the stub must SATISFY four gates at once
+    // rather than cite one vocabulary, so there is no constant to spread.
+    stubOutput: nextBestActionStubOutput,
+    async prepare(db, input) {
+      const opportunity = { ...(input.opportunity as Record<string, unknown>) };
+      // Seed AT THE STAGE THE FIXTURE DECLARES. Here the stage is load-bearing
+      // for TWO gates: `not-terminal-status` blocks on it alone, and
+      // `lifecycle-legal` indexes `allowedActionsByStage` by it. Seeding a
+      // fixed stage and rebinding it onto the input (what the enrollment-brief
+      // and conversation entries do) would rewrite what `terminal_stage_enrolled`
+      // tests into a non-terminal run that passes.
+      const seeded = await seedNextBestActionFixture(db, opportunity.stage as OpportunityStage);
+      const person = { ...(input.person as Record<string, unknown>) };
+      opportunity.id = seeded.opportunity.id;
+      opportunity.stage = seeded.opportunity.stage;
+      person.id = seeded.person.id;
+      // No `interaction` to rebind: this agent's input schema has none. The six
+      // policy sets it also reads (`consentedChannels`, `cooldownUntil`, `now`,
+      // `availableOffers`, `allowedActionsByStage`, and the two action-key
+      // arrays) are least-privilege caller INPUT with no canonical table behind
+      // them — each is an explicit unseeded FLAG on the definition — so they
+      // pass through from the fixture untouched. `existingOpenActions` and
+      // `scheduledActivities` carry a `target` that would need rebinding to the
+      // seeded person id if a fixture ever populated them; all six currently
+      // supply empty arrays, and those two gates' blocking paths are covered by
+      // FOS1-NBA-06/07.
       return { workspaceId: seeded.workspace.id, input: { ...input, opportunity, person } };
     },
   },

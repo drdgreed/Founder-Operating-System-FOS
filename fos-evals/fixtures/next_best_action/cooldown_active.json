@@ -1,7 +1,8 @@
 {
   "fixture_id": "next_best_action.cooldown_active",
   "agent_key": "fos.next_best_action",
-  "description": "Consent is recorded for email, but the person was contacted very recently and remains inside an active cooldown window. A proposed contact action must block regardless of consent.",
+  "schema_version": 2,
+  "description": "Consent is recorded for email, but the person was contacted recently and `now` is still inside the active cooldown window. CONVERTED TO v2 (P1.10d-7), and INVERTED from `policy_blocked` to `succeeded`, for the same structural reason as `consent_unknown_blocks`: `cooldownGate` returns allowed for any action `nbaActionIsContact` says is not a contact, and `internal_task`/`no_action` are both permitted at this stage. A well-behaved model told that contact is in cooldown until 2026-01-08 recommends a non-contact action and SUCCEEDS — FOS1-NBA-13 asserts precisely this combination ('succeeds even with no consent recorded AND an active cooldown'). Requiring `policy_blocked` would require the model to propose a contact it was told is barred, and D6.3 would then grade a correctly-behaving model CRITICAL for succeeding, permanently. The cooldown BLOCK path stays covered by FOS1-NBA-04 (a contact proposed before `cooldownUntil`) and FOS1-NBA-16 (a derived-contact action cannot escape cooldown, since there is no model-authored isContact to falsify) — both drive the output directly. What this row now tests is whether a live model DEFERS contact rather than proposing it inside the window, which is the `output_assertions` entry below.",
   "input": {
     "opportunity": {
       "id": "00000000-0000-0000-0000-000000000461",
@@ -24,15 +25,29 @@
     }
   },
   "expected": {
-    "status": "policy_blocked",
+    "status": ["succeeded"],
     "gate_outcomes": {
       "fos.next_best_action.mode-allowed": "pass",
       "fos.next_best_action.consent": "pass",
-      "fos.next_best_action.cooldown": "critical_fail"
+      "fos.next_best_action.cooldown": "pass",
+      "fos.next_best_action.lifecycle-legal": "pass",
+      "fos.next_best_action.no-duplicate-task": "pass",
+      "fos.next_best_action.no-scheduled-activity-conflict": "pass",
+      "fos.next_best_action.not-terminal-status": "pass",
+      "fos.next_best_action.offer-available": "pass"
     },
-    "output_schema_constraints": [
-      "no EnrollmentActionRecommendation row is written",
-      "no artifact is created"
+    "artifact_version_status": ["draft", "in_review"],
+    "max_retry_count": 1,
+    "compliance_review_blocked": false,
+    "paired_control": null,
+    "control_must_match": [],
+    "output_assertions": [
+      {
+        "path": "actionType",
+        "op": "in",
+        "value": ["internal_task", "no_action"]
+      }
     ]
-  }
+  },
+  "critical_if_failed": ["artifact_version_status"]
 }
