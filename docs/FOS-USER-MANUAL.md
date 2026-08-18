@@ -2,7 +2,7 @@
 
 **For:** co-founders and operators. No engineering background assumed.
 **Covers:** what FOS does, why its output can be trusted, how to run it, and what is not ready yet.
-**Last updated:** 2026-08-01, after twelve live model runs.
+**Last updated:** 2026-08-18, after fourteen live model runs.
 
 ---
 
@@ -16,17 +16,20 @@ The point is not that a model writes text. The point is the **machinery around**
 
 ## 2. What it produces today
 
-Six agents exist. Three are wired into the evaluation harness and have been run against a live model:
+Six agents exist. **All six are now wired into the evaluation harness. Only two have ever been measured against a live model, and neither is validated under the gates it runs under today.**
 
-| Agent                      | What it produces                                                                                                        | State                                             |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| **Enrollment brief**       | A three-minute review of an applicant: summary, sourced facts, fit, pathway, objections, next action                    | **Validated** — 8 of 8 clean on the last full run |
-| **Objection intelligence** | Every objection from a completed call, split into _observed_ (must cite a source) and _inferred_ (carries a confidence) | **Validated** — 7 of 7                            |
-| **Call preparation**       | A pre-call brief: meeting objective, critical unknowns, top questions, permitted claims, claims to avoid                | **Not validated** — see §7                        |
+Wiring an agent is not validating it — that lesson cost two agents' first live runs, and this table is written to keep the two apart.
 
-Three more have fixtures but are not yet wired: post-call synthesis, personalized follow-up, next best action. Three others (the editorial trio) have no test fixtures at all and **cannot be promoted** until someone writes them — named here rather than buried.
+| Agent                      | What it produces                                                                                                        | State                                                                                         |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Enrollment brief**       | A three-minute review of an applicant: summary, sourced facts, fit, pathway, objections, next action                    | **Clean at live run 8** (8 of 8) — but not re-measured since the safety gates changed. See §7 |
+| **Call preparation**       | A pre-call brief: meeting objective, critical unknowns, top questions, permitted claims, claims to avoid                | **Measured, not promotable** — 88.6% over 35 live runs                                        |
+| **Objection intelligence** | Every objection from a completed call, split into _observed_ (must cite a source) and _inferred_ (carries a confidence) | **Not validated** — its one live run raised a critical failure; fixes since are unmeasured    |
+| **Post-call synthesis**    | What happened on a call, and a proposed stage change the pipeline must accept                                           | **Wired, never run live**                                                                     |
+| **Personalized follow-up** | Outbound follow-up copy — the only agent whose output a person would read                                               | **Wired, never run live**                                                                     |
+| **Next best action**       | The single next action that is legal given consent, cooldown, stage, and available offers                               | **Wired, never run live**                                                                     |
 
----
+Three further agents — the editorial trio — have **no test fixtures at all** and cannot be promoted under this design until someone writes them. Named here rather than buried.
 
 ## 3. Why you can trust the output
 
@@ -123,6 +126,8 @@ Three numbers matter, and one of them outranks the others.
 
 > **A 96% pass rate containing a successful prompt injection is not a promotable agent.** That is why `critical` is separate from the pass rate rather than folded into it.
 
+A safety check can also return **"could not be compared."** The injection test works by running the same case twice, once with an attack embedded and once without, and comparing the two. If either run fails before it reaches a decision — for reasons that have nothing to do with the attack — there is nothing to compare. The report says so, in those words, rather than reporting a match or a divergence. It still counts against the pass rate, because an unanswered safety question is not a passed one.
+
 One guard worth knowing: if every result came from the free offline mode, the report **refuses to say PROMOTABLE** regardless of the numbers. A dry run exercises the plumbing, never the model — and without that guard, a perfect-looking score could be produced by a run that never called a model at all.
 
 ---
@@ -145,14 +150,15 @@ Each agent also has a hard ceiling coded into it. The enrollment brief's ceiling
 
 Stated plainly, because a manual that only lists strengths is marketing.
 
-- **Call preparation is not validated.** It intermittently returns output in the wrong shape — arrays emitted as text. A mitigation reduced this substantially, but the underlying cause is that this agent asks the model for seven separate lists at once, and the honest fix is to restructure what it asks for. Tracked; not finished.
-- **Three agents are wired, three are not.** Wiring is not just configuration — each needs its own test data and setup, and each so far has needed fixes that were made for the first agent and never carried across.
+- **Nothing is validated right now.** Two agents have live measurements; the other four have never called a real model. Read §2's right-hand column as the honest state, not the left-hand one.
+- **"Wired" and "validated" are different words here, deliberately.** Wiring needs test data, setup, and a hand-written benign control — and every agent so far has also needed fixes that were made for the first agent and never carried across. Three agents in a row hit the identical two defects. Expect the newly-wired three to surface their own on first contact.
+- **Enrollment brief's 8-of-8 is real but dated.** It was measured at live run 8. The shared safety classifier has changed several times since — a describing-a-guarantee fix, a first-person-assertion fix, and a contrastive-negation fix — and none of those changes has been re-measured against this agent. It is the best-evidenced agent in the system and it still needs a re-run.
+- **Objection intelligence is not validated, and an earlier version of this manual said it was.** The "7 of 7" figure was an offline dry run. Its only live run produced a critical failure — the safety floor blocked the agent's own correct report of a prompt-injection attempt. That was fixed; the fix has never been measured live.
+- **Call preparation is measured and not promotable.** The original defect — whole lists emitted as text instead of lists — is **fixed**, with zero occurrences across 35 runs. What remains is smaller and different: the model omits one required field about 6% of the time. Tracked; not finished.
 - **The editorial agents have no test fixtures.** They cannot be promoted under this design, because there is nothing to grade them against.
 - **Cost figures before mid-July undercounted**, because the compliance-review calls were not being measured. Current numbers are trustworthy; older ones are not.
 
-A full, unsentimental list of open items lives in `docs/planning/P1.10a-FOLLOWUPS.md`.
-
----
+A full, unsentimental list of open items lives in `/Users/davidreed/David_Portfolio/founder-operating-system/docs/planning/P1.10a-FOLLOWUPS.md`.
 
 ## 8. What it costs
 
@@ -162,6 +168,6 @@ A full enrollment-brief run — 9 test cases, roughly 20 model calls — costs a
 
 ## 9. The one thing to take away
 
-Every safety property above was found the same way: **by running the real model and reading what came back.** Twelve live runs produced twelve findings, and not one of them was visible to the seven-hundred-plus automated tests, because every one of those tests replaces the model with a stub.
+Every safety property above was found the same way: **by running the real model and reading what came back.** Fourteen live runs produced fourteen findings, and not one of them was visible to the 792 automated tests, because every one of those tests replaces the model with a stub.
 
 That is the working discipline behind FOS, and it is the reason to trust its output: **nothing here is believed until it has been run.**
