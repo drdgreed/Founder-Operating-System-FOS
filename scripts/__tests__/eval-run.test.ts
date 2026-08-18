@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { runTranscriptSchema, transcriptKey } from "@fos/contracts";
-import { runEvalSuite, stripEmptyAnthropicEnv, StubModelClient } from "../eval-run.js";
+import {
+  evalRunExitCode,
+  runEvalSuite,
+  stripEmptyAnthropicEnv,
+  StubModelClient,
+} from "../eval-run.js";
 import type {
   ModelClient,
   GenerateStructuredResult,
@@ -321,4 +326,64 @@ describe("F-C: the transcript states the runner had never produced", () => {
     expect(blocked!.usage.output_tokens).toBe(0);
     expect(blocked!.artifact).toBeNull();
   }, 240_000);
+});
+
+describe("the runner's exit code says whether the run MEASURED anything", () => {
+  // Live runs 15/16 (2026-08-18) returned `{"error":7}` for BOTH newly-wired
+  // agents — every fixture died on a 401 before the model was reached — and
+  // `eval-run.ts` still exited 0. It printed an estimated cost and a
+  // prompt-cache verdict on the way out, so the run read as one that happened.
+  //
+  // This is the P-005 / L-028 shape in the one place it costs most: an
+  // unattended loop or CI step consuming this runner is told "success" by a
+  // run that produced no verdict at all. `main()` only ever exited non-zero
+  // when it THREW, and a suite of failed runs returns normally.
+  //
+  // The line drawn here is deliberate. `policy_blocked` and
+  // `evaluation_failed` are RESULTS — the gates and the schema doing their job
+  // — and grading them is the Python grader's contract, not the runner's. Only
+  // `error` means the run never reached a verdict.
+
+  it("FOS1-EVALRUN-18: a suite where every run errored exits NON-ZERO", () => {
+    expect(evalRunExitCode([{ status: "error" }, { status: "error" }])).not.toBe(0);
+  });
+
+  it("FOS1-EVALRUN-19: ONE error among successes is still non-zero — a partial measurement is not a pass", () => {
+    expect(
+      evalRunExitCode([{ status: "succeeded" }, { status: "error" }, { status: "succeeded" }]),
+    ).not.toBe(0);
+  });
+
+  it("FOS1-EVALRUN-20: policy_blocked and evaluation_failed are RESULTS, not runner failures — exit 0", () => {
+    // The grader owns the promotion verdict. A runner that exited non-zero on a
+    // blocked fixture would make `flag_disabled` — a fixture that REQUIRES a
+    // block (F-D) — permanently red.
+    expect(
+      evalRunExitCode([
+        { status: "succeeded" },
+        { status: "policy_blocked" },
+        { status: "evaluation_failed" },
+      ]),
+    ).toBe(0);
+  });
+
+  it("FOS1-EVALRUN-21: an EMPTY suite is non-zero — measuring nothing is not success", () => {
+    expect(evalRunExitCode([])).not.toBe(0);
+  });
+
+  it("FOS1-EVALRUN-22: a real all-error suite from the runner itself exits non-zero", async () => {
+    // Proves the helper against transcripts the runner actually produced,
+    // not a hand-built array — the same client FOS1-EVALRUN-13 uses.
+    class ThrowingClient implements ModelClient {
+      async generateStructured(): Promise<GenerateStructuredResult> {
+        throw new Error("model unreachable (injected)");
+      }
+    }
+    const transcripts = await runEvalSuite({
+      agentKey: "fos.enrollment_brief",
+      repetitions: 1,
+      modelClient: new ThrowingClient(),
+    });
+    expect(evalRunExitCode(transcripts)).not.toBe(0);
+  }, 120_000);
 });

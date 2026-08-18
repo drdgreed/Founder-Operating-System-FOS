@@ -1024,6 +1024,28 @@ export function stripEmptyAnthropicEnv(): string[] {
  */
 const ESTIMATED_USD_PER_RUN = 0.053;
 
+/**
+ * The process exit code for a completed suite.
+ *
+ * `error` is the ONLY status meaning the run never reached a verdict: the
+ * model was unreachable, the credential was rejected, the harness threw. Live
+ * runs 15/16 returned `{"error":7}` on a 401 and the runner still exited 0,
+ * which is what an unattended loop reads as "the evals passed".
+ *
+ * `policy_blocked` and `evaluation_failed` are deliberately NOT failures here.
+ * They are results — the gates and the schema doing their job — and turning
+ * them into a non-zero exit would make `flag_disabled`, a fixture that
+ * REQUIRES a block (F-D), permanently red. Grading results is the Python
+ * grader's contract; this runner's job is to say whether it measured anything.
+ *
+ * An empty suite is non-zero for the same reason: measuring nothing is not
+ * success.
+ */
+export function evalRunExitCode(transcripts: ReadonlyArray<Pick<RunTranscript, "status">>): number {
+  if (transcripts.length === 0) return 1;
+  return transcripts.some((t) => t.status === "error") ? 1 : 0;
+}
+
 const isEntrypoint = process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1]);
 
 async function main() {
@@ -1126,6 +1148,21 @@ async function main() {
   }
   if (args.outDir)
     console.log(`eval-run: written to ${join(args.outDir, `${args.agentKey}.jsonl`)}`);
+
+  // Say whether the suite MEASURED anything, in the one channel a script,
+  // a loop, or CI actually reads.
+  const exitCode = evalRunExitCode(transcripts);
+  if (exitCode !== 0) {
+    const errored = transcripts.filter((t) => t.status === "error").length;
+    console.error(
+      transcripts.length === 0
+        ? "eval-run: NO transcripts were produced — nothing was measured."
+        : `eval-run: ${errored} of ${transcripts.length} run(s) ERRORED — this suite produced ` +
+            "no verdict. Read the `error` field in the transcripts before treating any other " +
+            "line above (cost, cache) as describing a run that happened.",
+    );
+  }
+  process.exitCode = exitCode;
 }
 
 if (isEntrypoint) {
